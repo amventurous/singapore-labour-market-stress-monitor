@@ -2,7 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-import re
+
+# =====================================================
+# PAGE CONFIGURATION
+# =====================================================
 
 st.set_page_config(
     page_title="Singapore Labour Market Stress Monitor",
@@ -10,7 +13,9 @@ st.set_page_config(
 )
 
 st.title("Singapore Labour Market Stress Monitor")
-st.write("Predicting next-quarter industry-level labour market stress")
+st.caption(
+    "Predicting next-quarter industry-level labour market stress"
+)
 
 INDICATORS = [
     "employment_change",
@@ -29,6 +34,10 @@ LABELS = {
 }
 
 
+# =====================================================
+# LOAD MODEL AND DATA
+# =====================================================
+
 @st.cache_resource
 def load_model():
     return joblib.load("labour_stress_model.joblib")
@@ -37,60 +46,75 @@ def load_model():
 @st.cache_data
 def load_data():
     dashboard = pd.read_csv("dashboard_data.csv")
-    historical = pd.read_csv("historical_labour_data.csv")
+    history = pd.read_csv("historical_labour_data.csv")
 
     required = ["quarter", "industry"] + INDICATORS
-    missing = [c for c in required if c not in historical.columns]
 
+    missing = [c for c in required if c not in history.columns]
     if missing:
         raise ValueError(
-            f"Historical data missing columns: {missing}"
+            f"Historical CSV missing columns: {missing}"
         )
 
-    historical = historical[required].copy()
+    history = history[required].copy()
 
-    for data in [dashboard, historical]:
+    for data in [dashboard, history]:
         data["quarter"] = pd.PeriodIndex(
             data["quarter"].astype(str).str.replace(
                 "-", "", regex=False
             ),
             freq="Q"
         )
+
         data["industry"] = (
-            data["industry"].astype(str).str.strip().str.lower()
+            data["industry"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
         )
 
-    for c in INDICATORS:
-        historical[c] = pd.to_numeric(
-            historical[c], errors="coerce"
+    for indicator in INDICATORS:
+        history[indicator] = pd.to_numeric(
+            history[indicator],
+            errors="coerce"
         )
 
-    if historical.duplicated(["industry", "quarter"]).any():
+    if history.duplicated(
+        ["industry", "quarter"]
+    ).any():
         raise ValueError(
-            "Historical data contain duplicate industry-quarter rows."
+            "Historical data contain duplicate "
+            "industry-quarter records."
         )
 
-    return dashboard, historical
+    return dashboard, history
 
+
+# =====================================================
+# FEATURE ENGINEERING
+# =====================================================
 
 def calculate_features(data):
+
     result = data.sort_values(
         ["industry", "quarter"]
     ).copy()
 
     for indicator in INDICATORS:
+
         grouped = result.groupby("industry")[indicator]
 
-        # Quarter-on-quarter change
+        # Quarter-on-quarter changes
         result[f"{indicator}_qoq_change"] = grouped.diff()
 
-        # Previous 12 quarters, excluding current quarter
+        # Rolling mean of previous 12 quarters
         rolling_mean = grouped.transform(
             lambda s: s.shift(1).rolling(
                 12, min_periods=12
             ).mean()
         )
 
+        # Rolling standard deviation
         rolling_std = grouped.transform(
             lambda s: s.shift(1).rolling(
                 12, min_periods=12
@@ -105,12 +129,16 @@ def calculate_features(data):
     return result
 
 
-def make_prediction(data, model, features):
-    X = data[features]
+def predict_stress(data, model, features):
 
-    if X.isna().any().any():
+    X = data[features].copy()
+
+    if not np.isfinite(
+        X.to_numpy(dtype=float)
+    ).all():
         raise ValueError(
-            "Insufficient historical data to calculate model features."
+            "Unable to calculate complete model features. "
+            "Please check the historical data."
         )
 
     scores = model.predict_proba(X)[:, 1] * 100
@@ -119,373 +147,536 @@ def make_prediction(data, model, features):
     return scores, predictions
 
 
-def format_quarter(value):
-    text = str(value).strip().upper().replace("-", "")
-    text = text.replace(" ", "")
+def display_forecasts(data):
 
-    if not re.fullmatch(r"\d{4}Q[1-4]", text):
-        raise ValueError(
-            "Enter a valid quarter, such as 2026Q3."
-        )
+    if data.empty:
+        st.info("No forecasts to display.")
+        return
 
-    return pd.Period(text, freq="Q")
+    selected = data.copy()
 
+    selected["Stress Score (%)"] = (
+        selected["Stress Score (%)"].astype(float)
+    )
+
+    selected = selected.sort_values(
+        "Stress Score (%)",
+        ascending=False
+    )
+
+    st.subheader("Predicted Stress Scores by Industry")
+
+    st.bar_chart(
+        selected.set_index("industry")["Stress Score (%)"],
+        horizontal=True
+    )
+
+    st.subheader("Industry Stress Predictions")
+
+    display = selected[
+        ["industry", "Stress Score (%)", "Status"]
+    ].copy()
+
+    display["Stress Score (%)"] = (
+        display["Stress Score (%)"].round(1)
+    )
+
+    st.dataframe(
+        display,
+        hide_index=True,
+        use_container_width=True
+    )
+
+
+# =====================================================
+# INITIALISE APPLICATION
+# =====================================================
 
 try:
     model = load_model()
-    df, historical = load_data()
+    dashboard, historical = load_data()
     features = list(model.feature_names_in_)
-except Exception as e:
-    st.error(f"Unable to load dashboard files: {e}")
-    st.stop()
 
-# Keep manual entries within the user's session.
-if "manual_entries" not in st.session_state:
-    st.session_state.manual_entries = pd.DataFrame(
-        columns=["quarter", "industry"] + INDICATORS
+    dashboard["Stress Score (%)"], dashboard[
+        "Predicted Stress"
+    ] = predict_stress(
+        dashboard, model, features
     )
 
-# Score existing dashboard data.
-try:
-    df["Stress Score (%)"], df["Predicted Stress"] = (
-        make_prediction(df, model, features)
-    )
 except Exception as e:
-    st.error(f"Unable to calculate dashboard predictions: {e}")
+    st.error(f"Unable to initialise dashboard: {e}")
     st.stop()
 
-df["Status"] = df["Predicted Stress"].map({
+dashboard["Status"] = dashboard[
+    "Predicted Stress"
+].map({
     1: "Stressed",
     0: "Not Stressed"
 })
 
-latest_quarter = df["quarter"].max()
-prediction_quarter = latest_quarter + 1
+if "manual_entries" not in st.session_state:
+    st.session_state.manual_entries = []
 
-st.caption(
-    "Model scores are screening signals, not calibrated probabilities. "
-    "Stress is based on an analyst-defined classification, not an "
-    "official MOM stress definition."
+if "manual_results" not in st.session_state:
+    st.session_state.manual_results = []
+
+st.info(
+    "This dashboard provides exploratory early-warning "
+    "signals. Stress scores are model outputs, not "
+    "calibrated probabilities or official MOM forecasts."
 )
 
 tab1, tab2 = st.tabs([
-    "📊 Compare Industries",
-    "📝 Manual Forecast"
+    "Compare Industries",
+    "Manual Forecast"
 ])
 
-# --------------------------------------------------
+
+# =====================================================
 # TAB 1: COMPARE INDUSTRIES
-# --------------------------------------------------
+# =====================================================
 
 with tab1:
-    st.subheader(
-        f"Labour Market Stress Forecast: {prediction_quarter}"
-    )
 
-    latest_df = df[
-        df["quarter"] == latest_quarter
+    latest_quarter = dashboard["quarter"].max()
+
+    current = dashboard[
+        dashboard["quarter"] == latest_quarter
     ].copy()
+
+    st.subheader(
+        f"Labour Market Stress Forecast: "
+        f"{latest_quarter + 1}"
+    )
 
     col1, col2, col3 = st.columns(3)
 
     col1.metric(
         "Industries Monitored",
-        len(latest_df)
+        len(current)
     )
+
     col2.metric(
         "Industries Flagged",
-        int(latest_df["Predicted Stress"].sum())
+        int(current["Predicted Stress"].sum())
     )
+
     col3.metric(
         "Industries Not Flagged",
-        int((latest_df["Predicted Stress"] == 0).sum())
+        int((current["Predicted Stress"] == 0).sum())
     )
 
     st.subheader("Select Industries to Compare")
 
     industries = sorted(
-        latest_df["industry"].unique().tolist()
+        current["industry"].unique().tolist()
     )
 
     if "selected_industries" not in st.session_state:
-        st.session_state.selected_industries = industries.copy()
+        st.session_state.selected_industries = (
+            industries.copy()
+        )
 
-    left, right = st.columns(2)
+    c1, c2 = st.columns(2)
 
-    with left:
-        if st.button("Select All Industries"):
-            st.session_state.selected_industries = industries.copy()
+    if c1.button("Select All"):
+        st.session_state.selected_industries = (
+            industries.copy()
+        )
 
-    with right:
-        if st.button("Clear Selection"):
-            st.session_state.selected_industries = []
+    if c2.button("Clear Selection"):
+        st.session_state.selected_industries = []
 
     selected_industries = st.multiselect(
-        "Tick one or more industries",
+        "Tick industries to compare",
         industries,
         key="selected_industries",
         format_func=lambda x: x.title()
     )
 
-    selected = latest_df[
-        latest_df["industry"].isin(selected_industries)
+    selected = current[
+        current["industry"].isin(selected_industries)
     ].copy()
 
-    selected = selected.sort_values(
-        "Stress Score (%)", ascending=False
-    )
-
     if selected.empty:
-        st.info("Select at least one industry to view predictions.")
+        st.warning(
+            "Please select at least one industry."
+        )
 
     else:
-        st.subheader("Choose What to Display")
 
         show_scores = st.checkbox(
-            "Stress Score Bar Chart", value=True
+            "Show Stress Score Chart",
+            value=True
         )
+
         show_table = st.checkbox(
-            "Industry Prediction Table", value=True
+            "Show Prediction Table",
+            value=True
         )
+
         show_indicators = st.checkbox(
-            "Individual Labour Market Indicator Charts",
+            "Show Labour Market Indicator Charts",
             value=False
         )
 
-        if show_scores:
-            st.subheader("Predicted Stress Scores by Industry")
+        if show_scores or show_table:
 
-            st.bar_chart(
-                selected.set_index("industry")["Stress Score (%)"],
-                horizontal=True
-            )
+            if show_scores and show_table:
+                display_forecasts(selected)
 
-        if show_table:
-            st.subheader("Industry Stress Predictions")
+            elif show_scores:
+                st.subheader("Predicted Stress Scores")
 
-            st.dataframe(
-                selected[
-                    ["industry", "Stress Score (%)", "Status"]
-                ].round(1),
-                hide_index=True,
-                use_container_width=True
-            )
+                st.bar_chart(
+                    selected.set_index("industry")[
+                        "Stress Score (%)"
+                    ],
+                    horizontal=True
+                )
+
+            elif show_table:
+                st.subheader("Industry Stress Predictions")
+
+                st.dataframe(
+                    selected[
+                        ["industry", "Stress Score (%)", "Status"]
+                    ].round(1),
+                    hide_index=True,
+                    use_container_width=True
+                )
 
         if show_indicators:
-            st.subheader("Labour Market Indicators")
 
-            # Historical raw indicators for selected quarter
             raw = historical[
                 (historical["quarter"] == latest_quarter)
-                & (historical["industry"].isin(selected_industries))
+                & (
+                    historical["industry"].isin(
+                        selected_industries
+                    )
+                )
             ].copy()
 
             if raw.empty:
                 st.warning(
-                    "No raw indicator data found for this quarter."
+                    "No indicator data available "
+                    "for this quarter."
                 )
+
             else:
-                chart_choices = st.multiselect(
-                    "Choose indicators",
+                choices = st.multiselect(
+                    "Select indicators to display",
                     INDICATORS,
                     default=INDICATORS,
                     format_func=lambda x: LABELS[x]
                 )
 
-                for i in range(0, len(chart_choices), 2):
+                for i in range(0, len(choices), 2):
+
                     columns = st.columns(2)
 
                     for column, indicator in zip(
-                        columns, chart_choices[i:i + 2]
+                        columns,
+                        choices[i:i + 2]
                     ):
+
                         with column:
-                            st.write(f"**{LABELS[indicator]}**")
+                            st.write(
+                                f"**{LABELS[indicator]}**"
+                            )
+
                             st.bar_chart(
-                                raw.set_index("industry")[indicator],
+                                raw.set_index("industry")[
+                                    indicator
+                                ],
                                 horizontal=True
                             )
 
-# --------------------------------------------------
-# TAB 2: MANUAL FORECAST
-# --------------------------------------------------
+
+# =====================================================
+# TAB 2: GUIDED MANUAL FORECAST
+# =====================================================
 
 with tab2:
-    st.subheader("Manual Next-Quarter Forecast")
+
+    st.subheader("Manual Labour Market Forecast")
 
     st.write(
-        "Enter the latest MOM quarterly figures for an industry. "
-        "The dashboard will calculate the model features using "
-        "the previous 12 quarters of data."
+        "Enter new quarterly MOM figures to generate "
+        "next-quarter labour market stress predictions."
     )
 
+    st.info(
+        "Quarters must be entered sequentially. "
+        "The dashboard automatically identifies the "
+        "next required quarter. You do not need to "
+        "select or type the quarter yourself."
+    )
+
+    # STEP 1: SELECT INDUSTRY
+
+    st.markdown("#### Step 1 — Select Industry")
+
     manual_industry = st.selectbox(
-        "Select Industry",
+        "Industry",
         sorted(historical["industry"].unique()),
         format_func=lambda x: x.title(),
         key="manual_industry"
     )
 
-    existing_manual = st.session_state.manual_entries.copy()
+    # Combine official history and session entries
 
-    combined_history = pd.concat(
-        [historical, existing_manual],
+    manual_entries_df = pd.DataFrame(
+        st.session_state.manual_entries,
+        columns=["quarter", "industry"] + INDICATORS
+    )
+
+    combined = pd.concat(
+        [historical, manual_entries_df],
         ignore_index=True
     )
 
-    combined_history = combined_history.sort_values(
+    combined = combined.sort_values(
         ["industry", "quarter"]
     )
 
-    industry_history = combined_history[
-        combined_history["industry"] == manual_industry
+    industry_data = combined[
+        combined["industry"] == manual_industry
     ].copy()
 
-    last_quarter = industry_history["quarter"].max()
+    last_quarter = industry_data["quarter"].max()
     next_quarter = last_quarter + 1
 
-    st.info(
-        f"Latest available quarter: {last_quarter}. "
-        f"Next quarter to enter: {next_quarter}."
+    # STEP 2: AUTO-DETERMINE NEXT QUARTER
+
+    st.markdown("#### Step 2 — Enter Quarterly Figures")
+
+    col1, col2 = st.columns(2)
+
+    col1.metric(
+        "Latest Available Quarter",
+        str(last_quarter)
     )
 
-    with st.form("manual_forecast_form"):
-        quarter_input = st.text_input(
-            "Reporting Quarter",
-            value=str(next_quarter)
-        )
+    col2.metric(
+        "Next Required Quarter",
+        str(next_quarter)
+    )
+
+    st.caption(
+        f"Enter the five MOM indicators for "
+        f"{next_quarter}. These will be used "
+        f"to predict stress in {next_quarter + 1}."
+    )
+
+    with st.form(
+        key=f"forecast_form_{manual_industry}_{next_quarter}"
+    ):
 
         values = {}
 
         for indicator in INDICATORS:
+
             values[indicator] = st.number_input(
                 LABELS[indicator],
                 value=0.0,
-                step=1.0 if indicator == "retrench" else 0.1
+                min_value=(
+                    None if indicator == "employment_change"
+                    else 0.0
+                ),
+                step=(
+                    1.0 if indicator == "retrench"
+                    else 0.1
+                ),
+                key=f"{manual_industry}_{next_quarter}_{indicator}"
             )
 
-        submit = st.form_submit_button(
-            "Generate Forecast"
+        submitted = st.form_submit_button(
+            f"Save {next_quarter} & Generate Forecast",
+            type="primary"
         )
 
-    if submit:
+    if submitted:
+
         try:
-            entered_quarter = format_quarter(quarter_input)
 
-            if entered_quarter != next_quarter:
-                raise ValueError(
-                    f"Please enter {next_quarter}. "
-                    "Quarters must be added consecutively."
-                )
+            # Check the previous 12 quarters
+            previous_12 = industry_data.tail(12)[
+                "quarter"
+            ].tolist()
 
-            if any(
-                values[c] < 0
-                for c in [
-                    "job_vacancy_rate",
-                    "recruitment_rate",
-                    "resignation_rate",
-                    "retrench"
-                ]
-            ):
-                raise ValueError(
-                    "Rates and retrenchment counts cannot be negative."
-                )
-
-            # Check the 12-quarter historical window.
-            previous_12 = industry_history.tail(12)["quarter"].tolist()
             required_12 = list(
                 pd.period_range(
-                    entered_quarter - 12,
-                    entered_quarter - 1,
+                    next_quarter - 12,
+                    next_quarter - 1,
                     freq="Q"
                 )
             )
 
             if previous_12 != required_12:
                 raise ValueError(
-                    "The preceding 12 consecutive quarters "
-                    "are required for this forecast."
+                    "The previous 12 consecutive quarters "
+                    "are required before forecasting."
                 )
 
             new_row = {
-                "quarter": entered_quarter,
+                "quarter": next_quarter,
                 "industry": manual_industry,
                 **values
             }
 
             updated = pd.concat(
                 [
-                    combined_history,
+                    combined,
                     pd.DataFrame([new_row])
                 ],
                 ignore_index=True
             )
 
-            calculated = calculate_features(updated)
+            engineered = calculate_features(updated)
 
-            new_features = calculated[
-                (calculated["industry"] == manual_industry)
-                & (calculated["quarter"] == entered_quarter)
+            target = engineered[
+                (engineered["industry"] == manual_industry)
+                & (engineered["quarter"] == next_quarter)
             ].copy()
 
-            score, prediction = make_prediction(
-                new_features, model, features
+            scores, predictions = predict_stress(
+                target,
+                model,
+                features
             )
 
-            st.success(
-                f"Forecast generated for {entered_quarter + 1}"
-            )
-
-            c1, c2 = st.columns(2)
-
-            c1.metric(
-                "Stress Score",
-                f"{score[0]:.1f}%"
-            )
-
-            c2.metric(
-                "Predicted Status",
-                "Stressed" if prediction[0] == 1
+            status = (
+                "Stressed"
+                if predictions[0] == 1
                 else "Not Stressed"
             )
 
-            with st.expander("View Calculated Model Features"):
-                st.dataframe(
-                    new_features[features],
-                    hide_index=True,
-                    use_container_width=True
-                )
+            # Save successful input in the session
+            st.session_state.manual_entries.append(
+                new_row
+            )
 
-            # Save entry only within this Streamlit session.
-            st.session_state.manual_entries = pd.concat(
-                [
-                    st.session_state.manual_entries,
-                    pd.DataFrame([new_row])
-                ],
-                ignore_index=True
+            # Save prediction result
+            st.session_state.manual_results.append({
+                "quarter": str(next_quarter),
+                "forecast_quarter": str(next_quarter + 1),
+                "industry": manual_industry,
+                "Stress Score (%)": float(scores[0]),
+                "Status": status
+            })
+
+            st.success(
+                f"{next_quarter} saved successfully. "
+                f"Forecast generated for "
+                f"{next_quarter + 1}."
+            )
+
+            st.metric(
+                "Stress Score",
+                f"{scores[0]:.1f}%"
+            )
+
+            st.metric(
+                "Predicted Status",
+                status
             )
 
             st.caption(
-                "Entry retained for this browser session. "
-                "The model has not been retrained."
+                "The next required quarter will "
+                "appear automatically after submission."
             )
+
+            st.rerun()
 
         except Exception as e:
             st.error(str(e))
 
-    if not st.session_state.manual_entries.empty:
-        st.subheader("Manually Entered Quarters")
+    # STEP 3: VIEW MANUAL FORECASTS
+
+    st.divider()
+    st.markdown("#### Step 3 — View Your Forecasts")
+
+    results = pd.DataFrame(
+        st.session_state.manual_results
+    )
+
+    if results.empty:
+
+        st.info(
+            "No manual forecasts generated yet. "
+            "Enter the quarterly figures above to begin."
+        )
+
+    else:
+
+        available_quarters = sorted(
+            results["forecast_quarter"].unique(),
+            reverse=True
+        )
+
+        selected_forecast_quarter = st.selectbox(
+            "Forecast Quarter",
+            available_quarters
+        )
+
+        quarter_results = results[
+            results["forecast_quarter"]
+            == selected_forecast_quarter
+        ].copy()
+
+        forecast_industries = sorted(
+            quarter_results["industry"].unique()
+        )
+
+        selected_forecast_industries = st.multiselect(
+            "Select Industries to Compare",
+            forecast_industries,
+            default=forecast_industries,
+            format_func=lambda x: x.title(),
+            key="manual_comparison"
+        )
+
+        comparison = quarter_results[
+            quarter_results["industry"].isin(
+                selected_forecast_industries
+            )
+        ].copy()
+
+        display_forecasts(comparison)
+
+        st.subheader("Saved Manual Forecasts")
+
+        display_results = results.copy()
 
         st.dataframe(
-            st.session_state.manual_entries,
+            display_results.round(1),
             hide_index=True,
             use_container_width=True
         )
 
         st.download_button(
-            "Download Manual Entries as CSV",
-            data=st.session_state.manual_entries.to_csv(
-                index=False
-            ),
-            file_name="manual_quarterly_entries.csv",
+            "Download Manual Forecasts",
+            data=display_results.to_csv(index=False),
+            file_name="manual_forecasts.csv",
             mime="text/csv"
         )
+
+        if st.button(
+            "Clear All Manual Forecasts",
+            type="secondary"
+        ):
+
+            st.session_state.manual_entries = []
+            st.session_state.manual_results = []
+
+            st.rerun()
+
+st.divider()
+
+st.caption(
+    "Data source: MOM quarterly labour market indicators. "
+    "Manual entries are retained only during the "
+    "current Streamlit session. The trained model "
+    "is not retrained when new quarters are entered."
+)
