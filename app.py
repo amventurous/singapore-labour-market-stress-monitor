@@ -2,68 +2,444 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+import altair as alt
+from html import escape
 
-# =====================================================
-# PAGE CONFIGURATION
-# =====================================================
+
+# ============================================================
+# 1. PAGE CONFIGURATION
+# ============================================================
 
 st.set_page_config(
     page_title="Singapore Labour Market Stress Monitor",
-    layout="wide"
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.title("Singapore Labour Market Stress Monitor")
-st.caption(
-    "Predicting next-quarter industry-level labour market stress"
+
+# ============================================================
+# 2. VISUAL DESIGN
+# ============================================================
+
+NAVY = "#14253D"
+BLUE = "#3266A8"
+TEAL = "#087F8C"
+RED = "#B84A4A"
+GREY = "#657487"
+
+st.markdown(
+    """
+    <style>
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+        max-width: 1400px;
+    }
+
+    h1, h2, h3 {
+        color: #14253D;
+        letter-spacing: -0.02em;
+    }
+
+    h1 {
+        font-size: 2.1rem !important;
+        font-weight: 750 !important;
+    }
+
+    div[data-testid="stMetric"] {
+        background: #F4F7FB;
+        border: 1px solid #E5EBF2;
+        border-radius: 12px;
+        padding: 16px 18px;
+    }
+
+    div[data-testid="stMetricLabel"] {
+        color: #657487;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: #14253D;
+        font-weight: 700;
+    }
+
+    .hero {
+        padding: 26px 30px;
+        background: linear-gradient(
+            110deg, #14253D, #244D78
+        );
+        border-radius: 15px;
+        color: white;
+        margin-bottom: 24px;
+    }
+
+    .hero-title {
+        font-size: 29px;
+        font-weight: 750;
+        line-height: 1.3;
+        margin-bottom: 10px;
+    }
+
+    .hero-subtitle {
+        font-size: 15px;
+        color: #D8E6F5;
+        line-height: 1.65;
+        max-width: 950px;
+    }
+
+    .eyebrow {
+        font-size: 11px;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+        color: #AFC9E8;
+        font-weight: 700;
+        margin-bottom: 10px;
+    }
+
+    .insight {
+        background: #F4F7FB;
+        border-left: 4px solid #3266A8;
+        padding: 18px 22px;
+        border-radius: 0 10px 10px 0;
+        line-height: 1.8;
+        margin: 12px 0 20px 0;
+    }
+
+    div[data-testid="stTabs"] button {
+        font-weight: 600;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
+
+
+# ============================================================
+# 3. INDICATOR DEFINITIONS
+# ============================================================
 
 INDICATORS = [
     "employment_change",
     "job_vacancy_rate",
     "recruitment_rate",
     "resignation_rate",
-    "retrench"
+    "retrench",
 ]
 
 LABELS = {
-    "employment_change": "Employment Change ('000)",
-    "job_vacancy_rate": "Job Vacancy Rate (%)",
-    "recruitment_rate": "Recruitment Rate (%)",
-    "resignation_rate": "Resignation Rate (%)",
-    "retrench": "Retrenchments (Number)"
+    "employment_change": "Employment Change",
+    "job_vacancy_rate": "Job Vacancy Rate",
+    "recruitment_rate": "Recruitment Rate",
+    "resignation_rate": "Resignation Rate",
+    "retrench": "Retrenchments",
 }
 
+UNITS = {
+    "employment_change": "Thousands",
+    "job_vacancy_rate": "%",
+    "recruitment_rate": "%",
+    "resignation_rate": "%",
+    "retrench": "Persons",
+}
 
-# =====================================================
-# LOAD MODEL AND DATA
-# =====================================================
+DESCRIPTIONS = {
+    "employment_change":
+        "Quarterly change in employment. Negative values "
+        "indicate a contraction in employment.",
+
+    "job_vacancy_rate":
+        "The job vacancy rate indicates the relative "
+        "level of unfilled positions.",
+
+    "recruitment_rate":
+        "The rate at which employers recruit workers.",
+
+    "resignation_rate":
+        "The rate at which employees resign from jobs.",
+
+    "retrench":
+        "The number of workers retrenched during "
+        "the quarter.",
+}
+
+MOM_SOURCES = [
+    {
+        "indicator": "Employment Change",
+        "dataset": "Quarterly Employment Change by Industry",
+        "url": (
+            "https://stats.mom.gov.sg/Pages/"
+            "EmploymentTimeSeries.aspx"
+        ),
+    },
+    {
+        "indicator": "Job Vacancy Rate",
+        "dataset": (
+            "Job Vacancy Rate by Industry "
+            "and Occupational Group"
+        ),
+        "url": (
+            "https://stats.mom.gov.sg/Pages/"
+            "JobVacancyTimeSeries.aspx"
+        ),
+    },
+    {
+        "indicator": "Recruitment Rate",
+        "dataset": (
+            "Average Monthly Recruitment Rate "
+            "by Industry and Occupational Group"
+        ),
+        "url": (
+            "https://stats.mom.gov.sg/Pages/"
+            "LabourTurnoverTimeSeries.aspx"
+        ),
+    },
+    {
+        "indicator": "Resignation Rate",
+        "dataset": (
+            "Average Monthly Resignation Rate "
+            "by Industry and Occupational Group"
+        ),
+        "url": (
+            "https://stats.mom.gov.sg/Pages/"
+            "LabourTurnoverTimeSeries.aspx"
+        ),
+    },
+    {
+        "indicator": "Retrenchments",
+        "dataset": (
+            "Number of Retrenched Employees "
+            "by Industry and Occupational Group"
+        ),
+        "url": (
+            "https://stats.mom.gov.sg/Pages/"
+            "RetrenchmentTimeSeries.aspx"
+        ),
+    },
+]
+
+
+# ============================================================
+# 4. HELPER FUNCTIONS
+# ============================================================
+
+def pretty_industry(name):
+    return str(name).title()
+
+
+def quarter_to_period(series):
+    cleaned = (
+        series.astype(str)
+        .str.strip()
+        .str.upper()
+        .str.replace("-", "", regex=False)
+        .str.replace(" ", "", regex=False)
+    )
+
+    return pd.PeriodIndex(cleaned, freq="Q")
+
+
+def quarter_label(quarter):
+    return f"{quarter.year} Q{quarter.quarter}"
+
+
+def format_score(score):
+    return f"{score:.1f}%"
+
+
+def render_insight(text):
+    st.markdown(
+        '<div class="insight">'
+        + escape(text)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def make_bar_chart(data, height=None):
+
+    source = data.copy()
+
+    if height is None:
+        height = max(300, len(source) * 38)
+
+    chart = (
+        alt.Chart(source)
+        .mark_bar(
+            cornerRadiusEnd=4,
+            size=20,
+        )
+        .encode(
+            x=alt.X(
+                "Stress Score (%):Q",
+                title="Model Stress Score (%)",
+                scale=alt.Scale(domain=[0, 100]),
+            ),
+            y=alt.Y(
+                "Industry:N",
+                sort="-x",
+                title=None,
+                axis=alt.Axis(labelLimit=320),
+            ),
+            color=alt.Color(
+                "Status:N",
+                scale=alt.Scale(
+                    domain=["Flagged", "Not Flagged"],
+                    range=[RED, TEAL],
+                ),
+                legend=alt.Legend(
+                    title=None,
+                    orient="bottom",
+                ),
+            ),
+            tooltip=[
+                alt.Tooltip(
+                    "Industry:N",
+                    title="Industry",
+                ),
+                alt.Tooltip(
+                    "Stress Score (%):Q",
+                    title="Model Score (%)",
+                    format=".1f",
+                ),
+                alt.Tooltip(
+                    "Status:N",
+                    title="Model Signal",
+                ),
+            ],
+        )
+        .properties(height=height)
+    )
+
+    return chart
+
+
+def show_prediction_table(data):
+
+    display = data[
+        ["Industry", "Stress Score (%)", "Status"]
+    ].copy()
+
+    display = display.sort_values(
+        "Stress Score (%)",
+        ascending=False,
+    )
+
+    st.dataframe(
+        display,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Industry": st.column_config.TextColumn(
+                "Industry",
+                width="large",
+            ),
+            "Stress Score (%)":
+                st.column_config.ProgressColumn(
+                    "Model Stress Score",
+                    format="%.1f%%",
+                    min_value=0,
+                    max_value=100,
+                ),
+            "Status": st.column_config.TextColumn(
+                "Model Signal",
+            ),
+        },
+    )
+
+
+def generate_outlook(latest, reporting_text, forecast_text):
+
+    total = len(latest)
+
+    flagged = latest[
+        latest["Predicted Stress"] == 1
+    ].sort_values(
+        "Stress Score (%)",
+        ascending=False,
+    )
+
+    count = len(flagged)
+
+    if count == 0:
+        return (
+            f"Based on {reporting_text} labour market "
+            f"indicators, the model did not flag any "
+            f"of the {total} monitored industries for "
+            f"potential stress in {forecast_text}. "
+            f"This does not rule out emerging risks "
+            f"or sector-specific challenges."
+        )
+
+    names = flagged["Industry"].head(3).tolist()
+
+    if len(names) == 1:
+        names_text = names[0]
+
+    elif len(names) == 2:
+        names_text = " and ".join(names)
+
+    else:
+        names_text = (
+            ", ".join(names[:-1])
+            + ", and "
+            + names[-1]
+        )
+
+    return (
+        f"Based on {reporting_text} labour market "
+        f"indicators, the model flagged {count} out "
+        f"of {total} industries for potential stress "
+        f"in {forecast_text}. "
+        f"The flagged industries with the highest "
+        f"model scores include {names_text}. "
+        f"These signals identify areas that may "
+        f"warrant closer monitoring and further "
+        f"investigation."
+    )
+
+
+# ============================================================
+# 5. LOAD MODEL AND DATA
+# ============================================================
 
 @st.cache_resource
 def load_model():
-    return joblib.load("labour_stress_model.joblib")
+    return joblib.load(
+        "labour_stress_model.joblib"
+    )
 
 
 @st.cache_data
 def load_data():
-    dashboard = pd.read_csv("dashboard_data.csv")
-    history = pd.read_csv("historical_labour_data.csv")
 
-    required = ["quarter", "industry"] + INDICATORS
+    dashboard = pd.read_csv(
+        "dashboard_data.csv"
+    )
 
-    missing = [c for c in required if c not in history.columns]
+    historical = pd.read_csv(
+        "historical_labour_data.csv"
+    )
+
+    required = (
+        ["quarter", "industry"] + INDICATORS
+    )
+
+    missing = [
+        column
+        for column in required
+        if column not in historical.columns
+    ]
+
     if missing:
         raise ValueError(
-            f"Historical CSV missing columns: {missing}"
+            "Historical CSV missing columns: "
+            + ", ".join(missing)
         )
 
-    history = history[required].copy()
+    for data in [dashboard, historical]:
 
-    for data in [dashboard, history]:
-        data["quarter"] = pd.PeriodIndex(
-            data["quarter"].astype(str).str.replace(
-                "-", "", regex=False
-            ),
-            freq="Q"
+        data["quarter"] = quarter_to_period(
+            data["quarter"]
         )
 
         data["industry"] = (
@@ -74,609 +450,1243 @@ def load_data():
         )
 
     for indicator in INDICATORS:
-        history[indicator] = pd.to_numeric(
-            history[indicator],
-            errors="coerce"
+        historical[indicator] = pd.to_numeric(
+            historical[indicator],
+            errors="coerce",
         )
 
-    if history.duplicated(
-        ["industry", "quarter"]
-    ).any():
-        raise ValueError(
-            "Historical data contain duplicate "
-            "industry-quarter records."
-        )
-
-    return dashboard, history
-
-
-# =====================================================
-# FEATURE ENGINEERING
-# =====================================================
-
-def calculate_features(data):
-
-    result = data.sort_values(
+    historical = historical.sort_values(
         ["industry", "quarter"]
     ).copy()
 
-    for indicator in INDICATORS:
-
-        grouped = result.groupby("industry")[indicator]
-
-        # Quarter-on-quarter changes
-        result[f"{indicator}_qoq_change"] = grouped.diff()
-
-        # Rolling mean of previous 12 quarters
-        rolling_mean = grouped.transform(
-            lambda s: s.shift(1).rolling(
-                12, min_periods=12
-            ).mean()
-        )
-
-        # Rolling standard deviation
-        rolling_std = grouped.transform(
-            lambda s: s.shift(1).rolling(
-                12, min_periods=12
-            ).std()
-        )
-
-        result[f"{indicator}_zscore"] = (
-            (result[indicator] - rolling_mean)
-            / rolling_std.replace(0, np.nan)
-        )
-
-    return result
-
-
-def predict_stress(data, model, features):
-
-    X = data[features].copy()
-
-    if not np.isfinite(
-        X.to_numpy(dtype=float)
-    ).all():
+    if historical.duplicated(
+        ["industry", "quarter"]
+    ).any():
         raise ValueError(
-            "Unable to calculate complete model features. "
-            "Please check the historical data."
+            "Duplicate industry-quarter records "
+            "found in historical_labour_data.csv."
         )
 
-    scores = model.predict_proba(X)[:, 1] * 100
-    predictions = model.predict(X)
-
-    return scores, predictions
+    return dashboard, historical
 
 
-def display_forecasts(data):
-
-    if data.empty:
-        st.info("No forecasts to display.")
-        return
-
-    selected = data.copy()
-
-    selected["Stress Score (%)"] = (
-        selected["Stress Score (%)"].astype(float)
-    )
-
-    selected = selected.sort_values(
-        "Stress Score (%)",
-        ascending=False
-    )
-
-    st.subheader("Predicted Stress Scores by Industry")
-
-    st.bar_chart(
-        selected.set_index("industry")["Stress Score (%)"],
-        horizontal=True
-    )
-
-    st.subheader("Industry Stress Predictions")
-
-    display = selected[
-        ["industry", "Stress Score (%)", "Status"]
-    ].copy()
-
-    display["Stress Score (%)"] = (
-        display["Stress Score (%)"].round(1)
-    )
-
-    st.dataframe(
-        display,
-        hide_index=True,
-        use_container_width=True
-    )
-
-
-# =====================================================
-# INITIALISE APPLICATION
-# =====================================================
+# ============================================================
+# 6. GENERATE LATEST FORECAST
+# ============================================================
 
 try:
+
     model = load_model()
+
     dashboard, historical = load_data()
+
     features = list(model.feature_names_in_)
 
-    dashboard["Stress Score (%)"], dashboard[
-        "Predicted Stress"
-    ] = predict_stress(
-        dashboard, model, features
+    missing_features = [
+        column
+        for column in features
+        if column not in dashboard.columns
+    ]
+
+    if missing_features:
+        raise ValueError(
+            "Dashboard CSV missing model features: "
+            + ", ".join(missing_features)
+        )
+
+    dashboard[features] = dashboard[
+        features
+    ].apply(
+        pd.to_numeric,
+        errors="coerce",
     )
 
-except Exception as e:
-    st.error(f"Unable to initialise dashboard: {e}")
+    latest_reporting_quarter = (
+        dashboard["quarter"].max()
+    )
+
+    latest = dashboard[
+        dashboard["quarter"]
+        == latest_reporting_quarter
+    ].copy()
+
+    if latest.empty:
+        raise ValueError(
+            "No records found for latest quarter."
+        )
+
+    if latest["industry"].duplicated().any():
+        raise ValueError(
+            "Duplicate industries found in "
+            "the latest reporting quarter."
+        )
+
+    if not np.isfinite(
+        latest[features].to_numpy(dtype=float)
+    ).all():
+        raise ValueError(
+            "Latest model features contain missing "
+            "or invalid values."
+        )
+
+    latest["Stress Score (%)"] = (
+        model.predict_proba(
+            latest[features]
+        )[:, 1] * 100
+    )
+
+    latest["Predicted Stress"] = (
+        model.predict(
+            latest[features]
+        )
+    )
+
+    latest["Status"] = (
+        latest["Predicted Stress"]
+        .map({
+            1: "Flagged",
+            0: "Not Flagged",
+        })
+    )
+
+    latest["Industry"] = (
+        latest["industry"].apply(
+            pretty_industry
+        )
+    )
+
+    latest = latest.sort_values(
+        "Stress Score (%)",
+        ascending=False,
+    )
+
+except Exception as error:
+
+    st.error(
+        f"Unable to initialise dashboard: {error}"
+    )
+
     st.stop()
 
-dashboard["Status"] = dashboard[
-    "Predicted Stress"
-].map({
-    1: "Stressed",
-    0: "Not Stressed"
-})
 
-if "manual_entries" not in st.session_state:
-    st.session_state.manual_entries = []
+# ============================================================
+# 7. DASHBOARD VARIABLES
+# ============================================================
 
-if "manual_results" not in st.session_state:
-    st.session_state.manual_results = []
-
-st.info(
-    "This dashboard provides exploratory early-warning "
-    "signals. Stress scores are model outputs, not "
-    "calibrated probabilities or official MOM forecasts."
+forecast_quarter = (
+    latest_reporting_quarter + 1
 )
 
-tab1, tab2 = st.tabs([
-    "Compare Industries",
-    "Manual Forecast"
-])
+reporting_text = quarter_label(
+    latest_reporting_quarter
+)
+
+forecast_text = quarter_label(
+    forecast_quarter
+)
+
+n_industries = len(latest)
+
+n_flagged = int(
+    latest["Predicted Stress"].sum()
+)
+
+n_not_flagged = (
+    n_industries - n_flagged
+)
+
+highest = latest.iloc[0]
+
+flagged = latest[
+    latest["Predicted Stress"] == 1
+].copy()
+
+industry_options = sorted(
+    latest["Industry"].tolist()
+)
+
+outlook = generate_outlook(
+    latest,
+    reporting_text,
+    forecast_text,
+)
 
 
-# =====================================================
-# TAB 1: COMPARE INDUSTRIES
-# =====================================================
+# ============================================================
+# 8. SIDEBAR
+# ============================================================
 
-with tab1:
+with st.sidebar:
 
-    latest_quarter = dashboard["quarter"].max()
-
-    current = dashboard[
-        dashboard["quarter"] == latest_quarter
-    ].copy()
-
-    st.subheader(
-        f"Labour Market Stress Forecast: "
-        f"{latest_quarter + 1}"
-    )
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric(
-        "Industries Monitored",
-        len(current)
-    )
-
-    col2.metric(
-        "Industries Flagged",
-        int(current["Predicted Stress"].sum())
-    )
-
-    col3.metric(
-        "Industries Not Flagged",
-        int((current["Predicted Stress"] == 0).sum())
-    )
-
-    st.subheader("Select Industries to Compare")
-
-    industries = sorted(
-        current["industry"].unique().tolist()
-    )
-
-    if "selected_industries" not in st.session_state:
-        st.session_state.selected_industries = (
-            industries.copy()
-        )
-
-    c1, c2 = st.columns(2)
-
-    if c1.button("Select All"):
-        st.session_state.selected_industries = (
-            industries.copy()
-        )
-
-    if c2.button("Clear Selection"):
-        st.session_state.selected_industries = []
-
-    selected_industries = st.multiselect(
-        "Tick industries to compare",
-        industries,
-        key="selected_industries",
-        format_func=lambda x: x.title()
-    )
-
-    selected = current[
-        current["industry"].isin(selected_industries)
-    ].copy()
-
-    if selected.empty:
-        st.warning(
-            "Please select at least one industry."
-        )
-
-    else:
-
-        show_scores = st.checkbox(
-            "Show Stress Score Chart",
-            value=True
-        )
-
-        show_table = st.checkbox(
-            "Show Prediction Table",
-            value=True
-        )
-
-        show_indicators = st.checkbox(
-            "Show Labour Market Indicator Charts",
-            value=False
-        )
-
-        if show_scores or show_table:
-
-            if show_scores and show_table:
-                display_forecasts(selected)
-
-            elif show_scores:
-                st.subheader("Predicted Stress Scores")
-
-                st.bar_chart(
-                    selected.set_index("industry")[
-                        "Stress Score (%)"
-                    ],
-                    horizontal=True
-                )
-
-            elif show_table:
-                st.subheader("Industry Stress Predictions")
-
-                st.dataframe(
-                    selected[
-                        ["industry", "Stress Score (%)", "Status"]
-                    ].round(1),
-                    hide_index=True,
-                    use_container_width=True
-                )
-
-        if show_indicators:
-
-            raw = historical[
-                (historical["quarter"] == latest_quarter)
-                & (
-                    historical["industry"].isin(
-                        selected_industries
-                    )
-                )
-            ].copy()
-
-            if raw.empty:
-                st.warning(
-                    "No indicator data available "
-                    "for this quarter."
-                )
-
-            else:
-                choices = st.multiselect(
-                    "Select indicators to display",
-                    INDICATORS,
-                    default=INDICATORS,
-                    format_func=lambda x: LABELS[x]
-                )
-
-                for i in range(0, len(choices), 2):
-
-                    columns = st.columns(2)
-
-                    for column, indicator in zip(
-                        columns,
-                        choices[i:i + 2]
-                    ):
-
-                        with column:
-                            st.write(
-                                f"**{LABELS[indicator]}**"
-                            )
-
-                            st.bar_chart(
-                                raw.set_index("industry")[
-                                    indicator
-                                ],
-                                horizontal=True
-                            )
-
-
-# =====================================================
-# TAB 2: GUIDED MANUAL FORECAST
-# =====================================================
-
-with tab2:
-
-    st.subheader("Manual Labour Market Forecast")
-
-    st.write(
-        "Enter new quarterly MOM figures to generate "
-        "next-quarter labour market stress predictions."
-    )
-
-    st.info(
-        "Quarters must be entered sequentially. "
-        "The dashboard automatically identifies the "
-        "next required quarter. You do not need to "
-        "select or type the quarter yourself."
-    )
-
-    # STEP 1: SELECT INDUSTRY
-
-    st.markdown("#### Step 1 — Select Industry")
-
-    manual_industry = st.selectbox(
-        "Industry",
-        sorted(historical["industry"].unique()),
-        format_func=lambda x: x.title(),
-        key="manual_industry"
-    )
-
-    # Combine official history and session entries
-
-    manual_entries_df = pd.DataFrame(
-        st.session_state.manual_entries,
-        columns=["quarter", "industry"] + INDICATORS
-    )
-
-    combined = pd.concat(
-        [historical, manual_entries_df],
-        ignore_index=True
-    )
-
-    combined = combined.sort_values(
-        ["industry", "quarter"]
-    )
-
-    industry_data = combined[
-        combined["industry"] == manual_industry
-    ].copy()
-
-    last_quarter = industry_data["quarter"].max()
-    next_quarter = last_quarter + 1
-
-    # STEP 2: AUTO-DETERMINE NEXT QUARTER
-
-    st.markdown("#### Step 2 — Enter Quarterly Figures")
-
-    col1, col2 = st.columns(2)
-
-    col1.metric(
-        "Latest Available Quarter",
-        str(last_quarter)
-    )
-
-    col2.metric(
-        "Next Required Quarter",
-        str(next_quarter)
+    st.markdown(
+        "## Labour Market Monitor"
     )
 
     st.caption(
-        f"Enter the five MOM indicators for "
-        f"{next_quarter}. These will be used "
-        f"to predict stress in {next_quarter + 1}."
+        "Quarterly Industry-Level Early Warning"
     )
-
-    with st.form(
-        key=f"forecast_form_{manual_industry}_{next_quarter}"
-    ):
-
-        values = {}
-
-        for indicator in INDICATORS:
-
-            values[indicator] = st.number_input(
-                LABELS[indicator],
-                value=0.0,
-                min_value=(
-                    None if indicator == "employment_change"
-                    else 0.0
-                ),
-                step=(
-                    1.0 if indicator == "retrench"
-                    else 0.1
-                ),
-                key=f"{manual_industry}_{next_quarter}_{indicator}"
-            )
-
-        submitted = st.form_submit_button(
-            f"Save {next_quarter} & Generate Forecast",
-            type="primary"
-        )
-
-    if submitted:
-
-        try:
-
-            # Check the previous 12 quarters
-            previous_12 = industry_data.tail(12)[
-                "quarter"
-            ].tolist()
-
-            required_12 = list(
-                pd.period_range(
-                    next_quarter - 12,
-                    next_quarter - 1,
-                    freq="Q"
-                )
-            )
-
-            if previous_12 != required_12:
-                raise ValueError(
-                    "The previous 12 consecutive quarters "
-                    "are required before forecasting."
-                )
-
-            new_row = {
-                "quarter": next_quarter,
-                "industry": manual_industry,
-                **values
-            }
-
-            updated = pd.concat(
-                [
-                    combined,
-                    pd.DataFrame([new_row])
-                ],
-                ignore_index=True
-            )
-
-            engineered = calculate_features(updated)
-
-            target = engineered[
-                (engineered["industry"] == manual_industry)
-                & (engineered["quarter"] == next_quarter)
-            ].copy()
-
-            scores, predictions = predict_stress(
-                target,
-                model,
-                features
-            )
-
-            status = (
-                "Stressed"
-                if predictions[0] == 1
-                else "Not Stressed"
-            )
-
-            # Save successful input in the session
-            st.session_state.manual_entries.append(
-                new_row
-            )
-
-            # Save prediction result
-            st.session_state.manual_results.append({
-                "quarter": str(next_quarter),
-                "forecast_quarter": str(next_quarter + 1),
-                "industry": manual_industry,
-                "Stress Score (%)": float(scores[0]),
-                "Status": status
-            })
-
-            st.success(
-                f"{next_quarter} saved successfully. "
-                f"Forecast generated for "
-                f"{next_quarter + 1}."
-            )
-
-            st.metric(
-                "Stress Score",
-                f"{scores[0]:.1f}%"
-            )
-
-            st.metric(
-                "Predicted Status",
-                status
-            )
-
-            st.caption(
-                "The next required quarter will "
-                "appear automatically after submission."
-            )
-
-            st.rerun()
-
-        except Exception as e:
-            st.error(str(e))
-
-    # STEP 3: VIEW MANUAL FORECASTS
 
     st.divider()
-    st.markdown("#### Step 3 — View Your Forecasts")
 
-    results = pd.DataFrame(
-        st.session_state.manual_results
+    st.markdown("**Current Forecast**")
+
+    st.markdown(
+        f"### {forecast_text}"
     )
 
-    if results.empty:
+    st.caption(
+        f"Based on data through {reporting_text}"
+    )
 
-        st.info(
-            "No manual forecasts generated yet. "
-            "Enter the quarterly figures above to begin."
+    st.divider()
+
+    st.markdown("**Dashboard Coverage**")
+
+    st.write(
+        f"{n_industries} industries monitored"
+    )
+
+    st.write(
+        "5 labour market indicators"
+    )
+
+    st.write(
+        "Balanced logistic regression"
+    )
+
+    st.divider()
+
+    st.markdown("**Dashboard Guide**")
+
+    st.caption(
+        "1. Review the quarterly outlook.\n\n"
+        "2. Compare industries.\n\n"
+        "3. Explore historical indicators.\n\n"
+        "4. Review methodology and data sources."
+    )
+
+    st.divider()
+
+    st.markdown("**Official Data Portal**")
+
+    st.link_button(
+        "Visit MOM Statistics ↗",
+        (
+            "https://stats.mom.gov.sg/"
+            "Statistics/Pages/Statistics.aspx"
+        ),
+    )
+
+    st.caption(
+        "Exploratory capstone project. "
+        "Not an official MOM forecasting system."
+    )
+
+
+# ============================================================
+# 9. DASHBOARD HEADER
+# ============================================================
+
+st.markdown(
+    f"""
+    <div class="hero">
+
+        <div class="eyebrow">
+            Labour Market Intelligence
+        </div>
+
+        <div class="hero-title">
+            Singapore Labour Market Stress Monitor
+        </div>
+
+        <div class="hero-subtitle">
+
+            An industry-level early-warning dashboard
+            translating quarterly labour market
+            indicators into accessible signals
+            for preliminary monitoring and
+            policy analysis.
+
+            <br><br>
+
+            <b>Reporting Period:</b>
+            {reporting_text}
+
+            &nbsp;&nbsp; | &nbsp;&nbsp;
+
+            <b>Forecast Period:</b>
+            {forecast_text}
+
+        </div>
+
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.write(
+    "This dashboard consolidates five key labour "
+    "market indicators published by Singapore's "
+    "Ministry of Manpower (MOM) to identify industries "
+    "that may warrant closer attention in the "
+    "subsequent quarter."
+)
+
+st.caption(
+    "Predictions are exploratory early-warning "
+    "signals based on an analyst-defined stress "
+    "classification. They are not official MOM "
+    "forecasts or calibrated probabilities."
+)
+
+st.divider()
+
+
+# ============================================================
+# 10. DASHBOARD TABS
+# ============================================================
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Quarterly Overview",
+    "Industry Comparison",
+    "Labour Market Indicators",
+    "Methodology & Limitations",
+    "Data Sources & References",
+])
+
+
+# ============================================================
+# TAB 1 — QUARTERLY OVERVIEW
+# ============================================================
+
+with tab1:
+
+    st.header(
+        f"Quarterly Outlook | {forecast_text}"
+    )
+
+    st.caption(
+        f"Predictions based on labour market "
+        f"data through {reporting_text}."
+    )
+
+    # HEADLINE METRICS
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric(
+        "Industries Monitored",
+        n_industries,
+    )
+
+    c2.metric(
+        "Industries Flagged",
+        n_flagged,
+    )
+
+    c3.metric(
+        "Industries Not Flagged",
+        n_not_flagged,
+    )
+
+    c4.metric(
+        "Highest Model Score",
+        format_score(
+            highest["Stress Score (%)"]
+        ),
+    )
+
+    st.write("")
+
+    # QUARTERLY NARRATIVE
+
+    st.subheader(
+        "Quarterly Labour Market Outlook"
+    )
+
+    render_insight(outlook)
+
+    st.caption(
+        "The narrative is generated automatically "
+        "from the latest model predictions. "
+        "It does not establish the causes of "
+        "labour market developments."
+    )
+
+    # INDUSTRY RANKING
+
+    st.subheader(
+        "Industry-Level Stress Scores"
+    )
+
+    st.write(
+        "Industries are ranked according to "
+        "their model-generated stress scores."
+    )
+
+    st.altair_chart(
+        make_bar_chart(latest),
+        use_container_width=True,
+    )
+
+    st.caption(
+        "Red indicates an industry flagged "
+        "by the model; teal indicates an "
+        "industry not flagged. Scores are "
+        "not calibrated risk probabilities."
+    )
+
+    # FLAGGED INDUSTRIES
+
+    st.subheader(
+        "Industries Warranting Closer Monitoring"
+    )
+
+    if flagged.empty:
+
+        st.success(
+            "No industries were flagged "
+            "for this forecast quarter."
         )
 
     else:
 
-        available_quarters = sorted(
-            results["forecast_quarter"].unique(),
-            reverse=True
+        show_prediction_table(flagged)
+
+    st.divider()
+
+    st.subheader(
+        "How to Interpret These Results"
+    )
+
+    st.write(
+        "A flagged industry should be treated "
+        "as a prompt for further investigation, "
+        "rather than confirmation of actual "
+        "labour market distress. The model "
+        "is designed for exploratory screening "
+        "and can generate false alarms."
+    )
+
+
+# ============================================================
+# TAB 2 — INDUSTRY COMPARISON
+# ============================================================
+
+with tab2:
+
+    st.header("Industry Comparison")
+
+    st.write(
+        "Select and compare model-generated "
+        "stress signals across industries."
+    )
+
+    selected_industries = st.multiselect(
+        "Select Industries",
+        options=industry_options,
+        default=industry_options,
+        key="comparison_industries",
+    )
+
+    if not selected_industries:
+
+        st.info(
+            "Select at least one industry "
+            "to begin comparing."
         )
 
-        selected_forecast_quarter = st.selectbox(
-            "Forecast Quarter",
-            available_quarters
-        )
+    else:
 
-        quarter_results = results[
-            results["forecast_quarter"]
-            == selected_forecast_quarter
-        ].copy()
-
-        forecast_industries = sorted(
-            quarter_results["industry"].unique()
-        )
-
-        selected_forecast_industries = st.multiselect(
-            "Select Industries to Compare",
-            forecast_industries,
-            default=forecast_industries,
-            format_func=lambda x: x.title(),
-            key="manual_comparison"
-        )
-
-        comparison = quarter_results[
-            quarter_results["industry"].isin(
-                selected_forecast_industries
+        comparison = latest[
+            latest["Industry"].isin(
+                selected_industries
             )
         ].copy()
 
-        display_forecasts(comparison)
-
-        st.subheader("Saved Manual Forecasts")
-
-        display_results = results.copy()
-
-        st.dataframe(
-            display_results.round(1),
-            hide_index=True,
-            use_container_width=True
+        comparison = comparison.sort_values(
+            "Stress Score (%)",
+            ascending=False,
         )
+
+        c1, c2, c3 = st.columns(3)
+
+        c1.metric(
+            "Industries Selected",
+            len(comparison),
+        )
+
+        c2.metric(
+            "Flagged",
+            int(
+                comparison[
+                    "Predicted Stress"
+                ].sum()
+            ),
+        )
+
+        c3.metric(
+            "Not Flagged",
+            int(
+                (
+                    comparison[
+                        "Predicted Stress"
+                    ] == 0
+                ).sum()
+            ),
+        )
+
+        st.subheader(
+            "Comparative Stress Scores"
+        )
+
+        st.altair_chart(
+            make_bar_chart(comparison),
+            use_container_width=True,
+        )
+
+        st.subheader(
+            "Industry Prediction Details"
+        )
+
+        show_prediction_table(comparison)
+
+        export_data = comparison[
+            [
+                "Industry",
+                "Stress Score (%)",
+                "Status",
+            ]
+        ].copy()
 
         st.download_button(
-            "Download Manual Forecasts",
-            data=display_results.to_csv(index=False),
-            file_name="manual_forecasts.csv",
-            mime="text/csv"
+            "Download Comparison (CSV)",
+            data=export_data.to_csv(
+                index=False
+            ),
+            file_name=(
+                "labour_stress_comparison_"
+                + str(forecast_quarter)
+                + ".csv"
+            ),
+            mime="text/csv",
         )
 
-        if st.button(
-            "Clear All Manual Forecasts",
-            type="secondary"
-        ):
+        st.caption(
+            "Model scores should be used "
+            "for relative screening, not "
+            "as definitive measurements "
+            "of actual industry risk."
+        )
 
-            st.session_state.manual_entries = []
-            st.session_state.manual_results = []
 
-            st.rerun()
+# ============================================================
+# TAB 3 — LABOUR MARKET INDICATORS
+# ============================================================
+
+with tab3:
+
+    st.header(
+        "Labour Market Indicators"
+    )
+
+    st.write(
+        "Explore historical MOM labour market "
+        "indicators to understand the context "
+        "behind industry-level model signals."
+    )
+
+    # INDICATOR SELECTION
+
+    indicator = st.selectbox(
+        "Select Labour Market Indicator",
+        INDICATORS,
+        format_func=lambda x: LABELS[x],
+    )
+
+    # INDUSTRY SELECTION
+
+    historical_industries = sorted(
+        historical["industry"].unique()
+    )
+
+    selected_history_industries = st.multiselect(
+        "Select Industries",
+        options=historical_industries,
+        default=historical_industries[:3],
+        format_func=pretty_industry,
+        key="history_industries",
+    )
+
+    st.info(
+        DESCRIPTIONS[indicator]
+    )
+
+    if not selected_history_industries:
+
+        st.warning(
+            "Select at least one industry "
+            "to view historical trends."
+        )
+
+    else:
+
+        history_filtered = historical[
+            historical["industry"].isin(
+                selected_history_industries
+            )
+        ].copy()
+
+        available_quarters = sorted(
+            history_filtered[
+                "quarter"
+            ].unique()
+        )
+
+        if not available_quarters:
+
+            st.warning(
+                "No historical data available "
+                "for this selection."
+            )
+
+        else:
+
+            earliest = available_quarters[0]
+            latest_history = available_quarters[-1]
+
+            default_start = max(
+                earliest,
+                latest_history - 19,
+            )
+
+            quarter_options = [
+                str(q)
+                for q in available_quarters
+            ]
+
+            default_index = next(
+                (
+                    i
+                    for i, q in enumerate(
+                        available_quarters
+                    )
+                    if q >= default_start
+                ),
+                0,
+            )
+
+            start_quarter = st.selectbox(
+                "Start Quarter",
+                options=quarter_options,
+                index=default_index,
+            )
+
+            start_period = pd.Period(
+                start_quarter,
+                freq="Q",
+            )
+
+            history_filtered = history_filtered[
+                history_filtered["quarter"]
+                >= start_period
+            ].copy()
+
+            history_filtered["Industry"] = (
+                history_filtered["industry"]
+                .apply(pretty_industry)
+            )
+
+            history_filtered["Quarter"] = (
+                history_filtered["quarter"]
+                .astype(str)
+            )
+
+            history_filtered = history_filtered[
+                history_filtered[
+                    indicator
+                ].notna()
+            ].copy()
+
+            st.subheader(
+                f"{LABELS[indicator]} Over Time"
+            )
+
+            st.caption(
+                f"Unit: {UNITS[indicator]}"
+            )
+
+            if history_filtered.empty:
+
+                st.info(
+                    "No observations available "
+                    "for this selection."
+                )
+
+            else:
+
+                quarter_order = sorted(
+                    history_filtered[
+                        "Quarter"
+                    ].unique()
+                )
+
+                trend = (
+                    alt.Chart(
+                        history_filtered
+                    )
+                    .mark_line(
+                        point=True,
+                        strokeWidth=2.5,
+                    )
+                    .encode(
+                        x=alt.X(
+                            "Quarter:O",
+                            sort=quarter_order,
+                            title="Reporting Quarter",
+                            axis=alt.Axis(
+                                labelAngle=-45
+                            ),
+                        ),
+                        y=alt.Y(
+                            f"{indicator}:Q",
+                            title=(
+                                f"{LABELS[indicator]} "
+                                f"({UNITS[indicator]})"
+                            ),
+                            scale=alt.Scale(
+                                zero=False
+                            ),
+                        ),
+                        color=alt.Color(
+                            "Industry:N",
+                            title="Industry",
+                        ),
+                        tooltip=[
+                            alt.Tooltip(
+                                "Industry:N"
+                            ),
+                            alt.Tooltip(
+                                "Quarter:O"
+                            ),
+                            alt.Tooltip(
+                                f"{indicator}:Q",
+                                title=LABELS[indicator],
+                                format=".2f",
+                            ),
+                        ],
+                    )
+                    .properties(height=420)
+                    .interactive()
+                )
+
+                st.altair_chart(
+                    trend,
+                    use_container_width=True,
+                )
+
+                # LATEST OBSERVATIONS
+
+                st.subheader(
+                    "Latest Available Observations"
+                )
+
+                latest_observations = (
+                    history_filtered
+                    .sort_values("quarter")
+                    .groupby(
+                        "industry",
+                        as_index=False,
+                    )
+                    .tail(1)
+                )
+
+                latest_observations = (
+                    latest_observations[
+                        [
+                            "Industry",
+                            "Quarter",
+                            indicator,
+                        ]
+                    ]
+                    .rename(
+                        columns={
+                            indicator:
+                                LABELS[indicator]
+                        }
+                    )
+                    .sort_values("Industry")
+                )
+
+                st.dataframe(
+                    latest_observations.round(2),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+                # DOWNLOAD INDICATOR DATA
+
+                download_data = history_filtered[
+                    [
+                        "Industry",
+                        "Quarter",
+                        indicator,
+                    ]
+                ].copy()
+
+                st.download_button(
+                    "Download Indicator Data",
+                    data=download_data.to_csv(
+                        index=False
+                    ),
+                    file_name=(
+                        f"{indicator}_history.csv"
+                    ),
+                    mime="text/csv",
+                )
+
+    st.divider()
+
+    # INDICATOR DEFINITIONS
+
+    st.subheader(
+        "Understanding the Five Indicators"
+    )
+
+    with st.expander(
+        "View Indicator Definitions"
+    ):
+
+        for key in INDICATORS:
+
+            st.markdown(
+                f"**{LABELS[key]}**"
+            )
+
+            st.write(
+                DESCRIPTIONS[key]
+            )
+
+            st.caption(
+                f"Unit: {UNITS[key]}"
+            )
+
+
+# ============================================================
+# TAB 4 — METHODOLOGY AND LIMITATIONS
+# ============================================================
+
+with tab4:
+
+    st.header(
+        "Methodology & Limitations"
+    )
+
+    st.write(
+        "This dashboard presents predictions "
+        "from a supervised machine-learning "
+        "model developed as part of an "
+        "exploratory labour market stress "
+        "analysis."
+    )
+
+    # DATA
+
+    st.subheader(
+        "Data and Indicators"
+    )
+
+    st.write(
+        "The analysis uses historical "
+        "quarterly industry-level data "
+        "published by Singapore's "
+        "Ministry of Manpower."
+    )
+
+    for indicator in INDICATORS:
+
+        st.markdown(
+            f"- {LABELS[indicator]}"
+        )
+
+    # FEATURE ENGINEERING
+
+    st.subheader(
+        "Feature Engineering"
+    )
+
+    st.write(
+        "For each industry, the model uses "
+        "quarter-on-quarter changes and "
+        "rolling Z-scores calculated "
+        "relative to the previous "
+        "12 quarters."
+    )
+
+    st.write(
+        "These features capture short-term "
+        "movements and deviations from "
+        "recent industry-specific patterns."
+    )
+
+    # STRESS LABEL
+
+    st.subheader(
+        "Definition of Labour Market Stress"
+    )
+
+    st.write(
+        "The target variable is an "
+        "analyst-defined stress classification. "
+        "An industry-quarter is labelled "
+        "stressed when at least two "
+        "of four adverse conditions are met."
+    )
+
+    st.markdown(
+        """
+        - Employment-change Z-score ≤ −1
+        - Job-vacancy-rate Z-score ≤ −1
+        - Recruitment-rate Z-score ≤ −1
+        - Retrenchment Z-score ≥ +1
+        """
+    )
+
+    st.write(
+        "The resignation rate is included "
+        "as a predictive feature but is "
+        "not used to define the stress label."
+    )
+
+    # MODEL
+
+    st.subheader(
+        "Predictive Model"
+    )
+
+    st.write(
+        "The dashboard uses a balanced "
+        "logistic regression model to predict "
+        "whether an industry will meet the "
+        "analyst-defined stress criteria "
+        "in the following quarter."
+    )
+
+    st.write(
+        "The model was evaluated using "
+        "a chronological train-test split, "
+        "rather than randomly mixing "
+        "historical and future observations."
+    )
+
+    # MODEL PERFORMANCE
+
+    st.subheader(
+        "Model Evaluation"
+    )
+
+    st.caption(
+        "Held-out test results from "
+        "the capstone model evaluation."
+    )
+
+    m1, m2, m3 = st.columns(3)
+
+    m1.metric(
+        "Precision",
+        "0.487",
+    )
+
+    m2.metric(
+        "Recall",
+        "0.934",
+    )
+
+    m3.metric(
+        "F1 Score",
+        "0.640",
+    )
+
+    st.write(
+        "The model achieved high recall, "
+        "identifying most stressed "
+        "industry-quarters in the test set. "
+        "However, its lower precision "
+        "indicates a substantial number "
+        "of false alarms."
+    )
+
+    # LIMITATIONS
+
+    st.subheader(
+        "Key Limitations"
+    )
+
+    with st.expander(
+        "1. Analyst-defined Stress Labels",
+        expanded=True,
+    ):
+
+        st.write(
+            "The stress classification was "
+            "developed for this project. "
+            "It is not an official MOM "
+            "definition of labour market stress."
+        )
+
+    with st.expander(
+        "2. False Positives"
+    ):
+
+        st.write(
+            "The model prioritises sensitivity "
+            "and may flag industries that do "
+            "not subsequently meet the "
+            "defined stress criteria."
+        )
+
+    with st.expander(
+        "3. Uncalibrated Model Scores"
+    ):
+
+        st.write(
+            "Model scores should not be "
+            "interpreted as calibrated "
+            "probabilities of actual "
+            "labour market distress."
+        )
+
+    with st.expander(
+        "4. Limited Explanatory Power"
+    ):
+
+        st.write(
+            "The model identifies statistical "
+            "patterns but does not establish "
+            "the causes of labour market "
+            "developments."
+        )
+
+    with st.expander(
+        "5. Static Reporting Snapshot"
+    ):
+
+        st.write(
+            "The dashboard reflects the "
+            "latest dataset processed "
+            "for this project. It does "
+            "not automatically retrieve "
+            "newly published MOM data."
+        )
+
+    with st.expander(
+        "6. Not an Operational Forecasting System"
+    ):
+
+        st.write(
+            "The results are intended for "
+            "exploratory screening and "
+            "further investigation, rather "
+            "than standalone policy decisions."
+        )
+
+    st.divider()
+
+    st.subheader(
+        "Intended Use"
+    )
+
+    st.write(
+        "The dashboard supports preliminary "
+        "labour market monitoring, "
+        "cross-industry comparisons and "
+        "communication of model-generated "
+        "early-warning signals."
+    )
+
+
+# ============================================================
+# TAB 5 — DATA SOURCES & REFERENCES
+# ============================================================
+
+with tab5:
+
+    st.header(
+        "Data Sources & References"
+    )
+
+    st.write(
+        "This dashboard uses publicly "
+        "available quarterly labour market "
+        "statistics published by Singapore's "
+        "Ministry of Manpower (MOM). "
+        "The five indicators were cleaned, "
+        "standardised and consolidated "
+        "for industry-level analysis."
+    )
+
+    st.subheader(
+        "Official MOM Data Sources"
+    )
+
+    st.caption(
+        "Select any link below to access "
+        "the corresponding MOM statistical "
+        "table and published datasets."
+    )
+
+    # OFFICIAL DATASET LINKS
+
+    for source in MOM_SOURCES:
+
+        with st.container(border=True):
+
+            c1, c2 = st.columns(
+                [4, 1],
+                vertical_alignment="center",
+            )
+
+            with c1:
+
+                st.markdown(
+                    f"**{source['indicator']}**"
+                )
+
+                st.caption(
+                    source["dataset"]
+                )
+
+            with c2:
+
+                st.link_button(
+                    "View MOM Data ↗",
+                    source["url"],
+                    use_container_width=True,
+                )
+
+    st.divider()
+
+    # DATA PREPARATION
+
+    st.subheader(
+        "How the Data Was Prepared"
+    )
+
+    st.write(
+        "The original MOM datasets were "
+        "processed using Python in Google "
+        "Colab to produce a consolidated "
+        "industry-quarter dataset."
+    )
+
+    st.markdown(
+        """
+        The data preparation process involved:
+
+        1. Extracting quarterly industry-level observations.
+        2. Standardising industry classifications.
+        3. Cleaning and merging the five indicators.
+        4. Calculating quarter-on-quarter changes.
+        5. Computing rolling 12-quarter Z-scores.
+        6. Preparing features for next-quarter prediction.
+        """
+    )
+
+    # DATA COVERAGE
+
+    st.subheader(
+        "Dataset Coverage"
+    )
+
+    historical_start = (
+        historical["quarter"].min()
+    )
+
+    historical_end = (
+        historical["quarter"].max()
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    c1.metric(
+        "Historical Data Starts",
+        quarter_label(historical_start),
+    )
+
+    c2.metric(
+        "Latest Model Input",
+        reporting_text,
+    )
+
+    c3.metric(
+        "Forecast Quarter",
+        forecast_text,
+    )
+
+    st.write(
+        f"**Industries monitored:** "
+        f"{n_industries}"
+    )
+
+    st.write(
+        "**Data source:** "
+        "Ministry of Manpower, Singapore"
+    )
+
+    st.info(
+        "The dashboard uses a prepared "
+        "historical dataset and does not "
+        "automatically retrieve new MOM "
+        "releases. The official MOM source "
+        "pages may contain more recent "
+        "statistics than those processed "
+        "for this capstone project."
+    )
+
+    st.divider()
+
+    # REFERENCE PORTAL
+
+    st.subheader(
+        "Additional Official References"
+    )
+
+    st.link_button(
+        "MOM Labour Market Statistics Portal ↗",
+        (
+            "https://stats.mom.gov.sg/"
+            "Statistics/Pages/Statistics.aspx"
+        ),
+    )
+
+    st.subheader(
+        "Source Attribution"
+    )
+
+    st.caption(
+        "Source: Ministry of Manpower, "
+        "Singapore, Manpower Research and "
+        "Statistics Department. Labour market "
+        "statistical tables. Data have been "
+        "processed and analysed for an "
+        "independent capstone project."
+    )
+
+
+# ============================================================
+# 11. FOOTER
+# ============================================================
 
 st.divider()
 
 st.caption(
-    "Data source: MOM quarterly labour market indicators. "
-    "Manual entries are retained only during the "
-    "current Streamlit session. The trained model "
-    "is not retrained when new quarters are entered."
+    f"Singapore Labour Market Stress Monitor | "
+    f"Reporting Period: {reporting_text} | "
+    f"Forecast Period: {forecast_text}"
+)
+
+st.caption(
+    "Source: MOM quarterly labour market "
+    "indicators. Exploratory machine-learning "
+    "project. Not an official government forecast."
 )
