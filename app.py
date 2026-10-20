@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import joblib
@@ -67,17 +66,6 @@ selected = selected.sort_values(
     "Stress Score (%)", ascending=False
 )
 
-# Prediction table
-st.subheader("Industry Stress Predictions")
-
-st.dataframe(
-    selected[
-        ["industry", "Stress Score (%)", "Status"]
-    ].round(1),
-    hide_index=True,
-    use_container_width=True
-)
-
 # Visualisation
 st.subheader("Predicted Stress Scores by Industry")
 
@@ -90,4 +78,15 @@ st.caption(
     "Stress scores are model outputs, not calibrated probabilities. "
     "Predictions are based on an analyst-defined stress classification "
     "and should be used for preliminary screening only."
+)
+
+# Prediction table
+st.subheader("Industry Stress Predictions")
+
+st.dataframe(
+    selected[
+        ["industry", "Stress Score (%)", "Status"]
+    ].round(1),
+    hide_index=True,
+    use_container_width=True
 )
