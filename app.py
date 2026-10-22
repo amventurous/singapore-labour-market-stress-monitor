@@ -109,7 +109,7 @@ def plot_style(fig, height=380, **kwargs):
         template="plotly_dark", paper_bgcolor=BG, plot_bgcolor=BG,
         font=dict(color=TEXT, size=12), title_font=dict(color=TEXT),
         hoverlabel=dict(bgcolor=SURFACE, font_color=TEXT),
-        margin=dict(l=12, r=18, t=30, b=35), height=height, **kwargs
+        height=height, **({"margin": dict(l=12, r=18, t=30, b=35)} | kwargs)
     )
     if "legend" not in kwargs:
         fig.update_layout(legend=dict(font=dict(color=TEXT), title_font=dict(color=MUTED)))
