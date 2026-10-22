@@ -278,8 +278,14 @@ with tab2:
                     ))
                 fig.update_xaxes(dtick="M12", tickformat="%Y", title="Year")
                 fig.update_yaxes(title=f"{label} ({unit})")
-                plot_style(fig, height=380, legend=dict(orientation="h", y=-0.22, x=0, font=dict(size=10)))
-                st.plotly_chart(fig, use_container_width=True, key=f"indicator_{field}")
+                plot_style(fig, height=620, legend=dict(
+                    orientation="v", x=1.02, y=1, xanchor="left",
+                    font=dict(size=11, color=TEXT)
+                ), margin=dict(l=12, r=18, t=30, b=35))
+                st.plotly_chart(
+                    fig, use_container_width=True, key=f"indicator_{field}",
+                    config={"displayModeBar": False, "displaylogo": False}
+                )
     if not frame.empty:
         download = frame[["quarter", "Industry", *INDICATORS]].copy()
         download["quarter"] = download["quarter"].astype(str)
