@@ -167,34 +167,56 @@ with tab2:
 
 with tab3:
     st.subheader('K-Means Clustering of Industry-Quarter Observations')
-    st.warning('The uploaded package did not contain the original K-Means labels, PCA coordinates, or clustering preprocessing. The visualisation below is a **new exploratory reconstruction**, not a reproduction of the three original named labour market states. Do not cite its counts as the original capstone results.')
-    clusters=build_clusters(history)
-    left,right=st.columns([1.6,1])
-    with left:
-        st.markdown('#### PCA scatter plot')
-        scatter=alt.Chart(clusters).mark_circle(size=48,opacity=.7).encode(
-            x=alt.X('PC1:Q',title='Principal Component 1'),y=alt.Y('PC2:Q',title='Principal Component 2'),
-            color=alt.Color('Cluster:N',scale=alt.Scale(domain=['Cluster 1','Cluster 2','Cluster 3'],range=PALETTE)),
-            tooltip=['Industry:N','Quarter:N','Cluster:N',alt.Tooltip('PC1:Q',format='.2f'),alt.Tooltip('PC2:Q',format='.2f')]
-        ).properties(height=400)
-        st.altair_chart(scatter,use_container_width=True)
-    with right:
-        st.markdown('#### Cluster distribution')
-        counts=clusters.groupby('Cluster').size().rename('Count').reset_index()
-        counts['Percentage']=counts['Count']/counts['Count'].sum()*100
-        counts['Label']=counts.apply(lambda r:f"{int(r['Count'])} ({r['Percentage']:.1f}%)",axis=1)
-        pie=alt.Chart(counts).mark_arc(innerRadius=48).encode(theta='Count:Q',color=alt.Color('Cluster:N',scale=alt.Scale(domain=['Cluster 1','Cluster 2','Cluster 3'],range=PALETTE)),tooltip=['Cluster:N','Count:Q',alt.Tooltip('Percentage:Q',format='.1f')]).properties(height=300)
-        st.altair_chart(pie,use_container_width=True)
-        st.dataframe(counts[['Cluster','Count','Percentage']].style.format({'Percentage':'{:.1f}%'}),hide_index=True,use_container_width=True)
-    st.caption('Reconstruction method: complete cases of five raw indicators, StandardScaler, K-Means (k=3; random_state=42; n_init=20), and 2-component PCA for display. PCA coordinates are for visualisation; K-Means was fitted on five standardised indicators.')
-    st.divider()
-    st.markdown('#### Explore exact industry-quarter members')
-    chosen=st.multiselect('Clusters (A–Z)',sorted(clusters['Cluster'].unique()),default=sorted(clusters['Cluster'].unique()),key='cluster_select')
-    subset=clusters.loc[clusters['Cluster'].isin(chosen)].sort_values(['Cluster','Industry','quarter'])
-    st.caption(f'{len(subset):,} industry-quarter observations selected')
-    columns=['Cluster','Industry','Quarter','PC1','PC2',*INDICATORS]
-    st.dataframe(subset[columns],hide_index=True,use_container_width=True)
-    st.download_button('Download selected cluster members',subset[columns].to_csv(index=False),file_name='cluster_members_reconstructed.csv',mime='text/csv')
+    st.markdown("### Understanding the Labour Market Clusters")
+    st.write(
+        "K-Means clustering groups industry-quarter observations "
+        "based on similarities across five labour market indicators. "
+        "The three labour market states identified in the original "
+        "capstone analysis are described below."
+    )
 
-st.divider()
-st.caption('Source: MOM quarterly labour market data supplied with the project. Dashboard is a static snapshot; new releases are not retrieved automatically.')
+    cluster_definitions = pd.DataFrame({
+        "Labour Market State": [
+            "Strong / Active",
+            "Cooling / Soft",
+            "Severe Disruption"
+        ],
+        "Definition": [
+            "Relatively stronger employment growth, job vacancies "
+            "and recruitment activity.",
+            "Weaker employment growth, vacancies and recruitment "
+            "activity, without pronounced disruption.",
+            "Pronounced adverse labour market movements, potentially "
+            "including employment contraction and elevated retrenchments."
+        ],
+        "Interpretation": [
+            "More active labour market with stronger hiring demand.",
+            "Moderating labour demand or softer labour market conditions.",
+            "Substantial disruption that may warrant closer examination."
+        ]
+    })
+
+    st.dataframe(
+        cluster_definitions,
+        hide_index=True,
+        use_container_width=True
+    )
+
+    st.info(
+        "**How to interpret the charts:** Each dot represents one "
+        "industry in one quarter. Dots with the same colour belong "
+        "to the same reconstructed cluster. PCA reduces the five "
+        "indicators to two dimensions for visualisation. "
+        "The pie chart shows the number and percentage of "
+        "industry-quarter observations in each cluster."
+    )
+
+    st.caption(
+        "Note: The three named labour market states describe the "
+        "original capstone findings. The current dashboard uses "
+        "reconstructed clustering results, so Cluster 1, 2 and 3 "
+        "have not yet been mapped to those states. "
+        "These are not official MOM classifications."
+    )
+
+    st.divider()
