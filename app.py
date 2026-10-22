@@ -1,200 +1,357 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import altair as alt
 import joblib
+import plotly.graph_objects as go
+import plotly.express as px
 import streamlit as st
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 
-st.set_page_config(page_title='Singapore Sectoral Labour Market Stress Monitor', page_icon='📊', layout='wide')
+st.set_page_config(page_title="Singapore Sectoral Labour Market Stress Monitor", page_icon="📊", layout="wide")
 ROOT = Path(__file__).resolve().parent
-INDICATORS = {'employment_change': ('Employment Change', 'Thousands'), 'job_vacancy_rate': ('Job Vacancy Rate', '%'), 'recruitment_rate': ('Recruitment Rate', '%'), 'resignation_rate': ('Resignation Rate', '%'), 'retrench': ('Retrenchments', 'Persons')}
-PALETTE = ['#0D9488','#F59E0B','#DC2626']
+
+# ── Shared visual system: change colours here only ───────────────────────────
+BG = "#0B111C"
+SURFACE = "#172235"
+TEXT = "#F2F6FC"
+MUTED = "#A9B7C9"
+GRID = "#344157"
+ALERT = "#F07073"                 # Status only
+NO_ALERT = "#8599B1"              # Status only
+INDUSTRY_PALETTE = [
+    "#D7BCE8", "#64C4D3", "#E7B96C", "#A7D69B",
+    "#D6A6A1", "#93B5EA", "#E2D68A", "#B5A5E8",
+    "#7FD3B6", "#E7A8CE", "#C4C9E3", "#B9C67C"
+]  # categorical only; distinct from the two status colours
+CLUSTER_COLORS = {
+    "Strong / Active": "#59C7B2",
+    "Cooling / Soft": "#C5A5ED",
+    "Severe Disruption": "#E5B45E",
+}
+HEATMAP_SCALE = [
+    [0.00, "#24364B"], [0.249, "#24364B"],
+    [0.25, "#426582"], [0.499, "#426582"],
+    [0.50, "#8273A4"], [0.749, "#8273A4"],
+    [0.75, "#B88A60"], [0.999, "#B88A60"],
+    [1.0, "#E5BD78"],
+]
+INDICATORS = {
+    "employment_change": ("Employment change", "thousand persons"),
+    "job_vacancy_rate": ("Job vacancy rate", "%"),
+    "recruitment_rate": ("Recruitment rate", "%"),
+    "resignation_rate": ("Resignation rate", "%"),
+    "retrench": ("Retrenchments", "persons"),
+}
+ZCOLS = [f"{c}_zscore" for c in INDICATORS]
+CLUSTER_NAMES = {0: "Severe Disruption", 1: "Strong / Active", 2: "Cooling / Soft"}
+CLUSTER_ORDER = ["Strong / Active", "Cooling / Soft", "Severe Disruption"]
+
+st.markdown(f"""<style>
+.stApp {{background:{BG};color:{TEXT};}}
+[data-testid="stSidebar"] {{background:{SURFACE};}}
+[data-testid="stMetric"] {{background:{SURFACE};padding:1rem;border-radius:0.8rem;}}
+[data-testid="stAlert"] {{background:{SURFACE};color:{TEXT};border:1px solid {GRID};border-radius:0.7rem;}}
+div[data-testid="stMarkdownContainer"] p {{line-height:1.55;}}
+</style>""", unsafe_allow_html=True)
+
+def info(message):
+    st.info(message, icon="ℹ️")
 
 @st.cache_data
 def load_data():
-    h = pd.read_csv(ROOT/'historical_labour_data.csv')
-    d = pd.read_csv(ROOT/'dashboard_data.csv')
-    for frame in (h,d):
-        frame['industry'] = frame['industry'].astype(str).str.strip().str.lower()
-        frame['quarter'] = pd.PeriodIndex(frame['quarter'].astype(str).str.replace('-', '', regex=False).str.replace(' ', '', regex=False),freq='Q')
-    h = h.sort_values(['industry','quarter']).reset_index(drop=True)
-    return h,d
+    hist = pd.read_csv(ROOT / "historical_labour_data.csv")
+    dash = pd.read_csv(ROOT / "dashboard_data.csv")
+    for df in (hist, dash):
+        df["industry"] = df["industry"].astype(str).str.strip().str.lower()
+        df["quarter"] = pd.PeriodIndex(
+            df["quarter"].astype(str).str.replace("-", "", regex=False).str.replace(" ", "", regex=False), freq="Q"
+        )
+    return hist.sort_values(["industry", "quarter"]).reset_index(drop=True), dash
 
 @st.cache_resource
 def load_model():
-    return joblib.load(ROOT/'labour_stress_model.joblib')
+    return joblib.load(ROOT / "labour_stress_model.joblib")
 
 @st.cache_data
-def build_clusters(history):
-    # Reconstructed clustering, NOT the original capstone's saved cluster assignments.
-    # Complete-case observations, five raw indicators standardized across industry-quarters.
-    raw = history.dropna(subset=list(INDICATORS)).copy()
-    x = StandardScaler().fit_transform(raw[list(INDICATORS)])
-    xy = PCA(n_components=2,random_state=42).fit_transform(x)
-    labels = KMeans(n_clusters=3,random_state=42,n_init=20).fit_predict(x)
-    raw['Cluster ID'] = labels.astype(int)
-    raw['PC1'],raw['PC2'] = xy[:,0],xy[:,1]
-    raw['Industry'] = raw['industry'].str.title()
-    raw['Quarter'] = raw['quarter'].astype(str)
-    # Descriptive neutral names avoid misrepresenting recreated clusters as original states.
-    raw['Cluster'] = raw['Cluster ID'].map(lambda v: f'Cluster {v+1}')
-    return raw
+def historical_features(hist):
+    data = hist.copy()
+    for col in INDICATORS:
+        group = data.groupby("industry")[col]
+        avg = group.transform(lambda s: s.shift(1).rolling(12, min_periods=12).mean())
+        sd = group.transform(lambda s: s.shift(1).rolling(12, min_periods=12).std())
+        data[col + "_zscore"] = (data[col] - avg) / sd.replace(0, np.nan)
+    valid = data[["employment_change_zscore", "job_vacancy_rate_zscore", "recruitment_rate_zscore", "retrench_zscore"]].notna().all(axis=1)
+    data["Adverse indicators"] = np.nan
+    data.loc[valid, "Adverse indicators"] = (
+        (data.loc[valid, "employment_change_zscore"] <= -1).astype(int)
+        + (data.loc[valid, "job_vacancy_rate_zscore"] <= -1).astype(int)
+        + (data.loc[valid, "recruitment_rate_zscore"] <= -1).astype(int)
+        + (data.loc[valid, "retrench_zscore"] >= 1).astype(int)
+    )
+    data["Industry"] = data["industry"].str.title()
+    return data
 
-def industry_filter(label, options, key, defaults=None):
-    options = sorted(options)
-    if defaults is None: defaults=options
-    a,b = st.columns([4,1])
-    with a:
-        chosen=st.multiselect(label, options, default=defaults, key=key)
-    with b:
-        st.caption(f'{len(chosen)} of {len(options)} selected')
-    return sorted(chosen)
+@st.cache_data
+def notebook_clusters(features):
+    # Original Capstone_Final.ipynb: five industry-relative 12-quarter z-scores;
+    # StandardScaler -> full PCA -> first 3 PCs -> KMeans(k=3, seed=42, n_init=10).
+    data = features.dropna(subset=ZCOLS).copy()
+    pcs = PCA().fit_transform(StandardScaler().fit_transform(data[ZCOLS]))
+    data["PC1"], data["PC2"], data["PC3"] = pcs[:, 0], pcs[:, 1], pcs[:, 2]
+    data["Cluster ID"] = KMeans(n_clusters=3, random_state=42, n_init=10).fit_predict(pcs[:, :3])
+    data["Cluster"] = data["Cluster ID"].map(CLUSTER_NAMES)
+    return data
 
-def quarter_filter(data, key):
-    qs=sorted(data['quarter'].unique())
-    a,b=st.columns(2)
-    with a: start=st.selectbox('From quarter',qs,index=0,format_func=str,key=f'{key}_from')
-    with b: end=st.selectbox('To quarter',qs,index=len(qs)-1,format_func=str,key=f'{key}_to')
-    if start>end:
-        st.warning('The starting quarter must be earlier than or equal to the ending quarter.')
-        return None,None
-    return start,end
+def plot_style(fig, height=380, **kwargs):
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor=BG, plot_bgcolor=BG,
+        font=dict(color=TEXT, size=12), title_font=dict(color=TEXT),
+        hoverlabel=dict(bgcolor=SURFACE, font_color=TEXT),
+        margin=dict(l=12, r=18, t=30, b=35), height=height, **kwargs
+    )
+    if "legend" not in kwargs:
+        fig.update_layout(legend=dict(font=dict(color=TEXT), title_font=dict(color=MUTED)))
+    fig.update_xaxes(gridcolor=GRID, zerolinecolor=GRID, tickfont=dict(color=MUTED), title_font=dict(color=MUTED))
+    fig.update_yaxes(gridcolor=GRID, zerolinecolor=GRID, tickfont=dict(color=MUTED), title_font=dict(color=MUTED))
+    return fig
 
-def line_plot(frame, value, unit, title):
-    if frame.empty:
-        st.info('No data for the selected industries and timeframe.')
-        return
-    base=alt.Chart(frame.assign(Quarter=frame['quarter'].astype(str))).mark_line(point=False,strokeWidth=2).encode(
-        x=alt.X('Quarter:N',sort=sorted(frame['quarter'].astype(str).unique()),title='Quarter',axis=alt.Axis(labelAngle=-50,labelOverlap=True)),
-        y=alt.Y(f'{value}:Q',title=f'{title} ({unit})'),
-        color=alt.Color('Industry:N',legend=alt.Legend(title='Industry',orient='bottom')),
-        tooltip=['Industry:N','Quarter:N',alt.Tooltip(f'{value}:Q',format=',.2f')]
-    ).properties(height=310)
-    st.altair_chart(base,use_container_width=True)
+def empty_notice():
+    info("No observations match the selected industries and historical quarter range.")
 
 try:
-    history,dashboard=load_data()
-    model=load_model()
-    features=list(model.feature_names_in_)
-    current_q=dashboard['quarter'].max()
-    latest=dashboard.loc[dashboard['quarter']==current_q].copy()
-    if latest['industry'].duplicated().any() or latest.empty:
-        raise ValueError('Latest prediction input has missing or duplicate industries.')
-    if any(f not in latest.columns for f in features):
-        raise ValueError('Missing trained-model features in dashboard_data.csv.')
-    x=latest[features].apply(pd.to_numeric,errors='coerce')
-    if not np.isfinite(x.to_numpy(dtype=float)).all():
-        raise ValueError('Prediction inputs contain invalid values.')
-    latest['Score']=model.predict_proba(x)[:,1]*100
-    latest['Flag']=model.predict(x).astype(int)
-    latest['Status']=latest['Flag'].map({1:'Stress alert',0:'No stress alert'})
-    latest['Industry']=latest['industry'].str.title()
-    latest=latest.sort_values('Score',ascending=False)
-    industries=sorted(history['industry'].str.title().unique())
-except Exception as exc:
-    st.error(f'Unable to initialise dashboard: {exc}')
+    history, dashboard = load_data()
+    model = load_model()
+    feature_names = list(model.feature_names_in_)
+    current_q = dashboard["quarter"].max()
+    latest = dashboard.loc[dashboard["quarter"] == current_q].copy()
+    if latest.empty or latest["industry"].duplicated().any():
+        raise ValueError("Latest prediction inputs are missing or duplicated.")
+    X = latest[feature_names].apply(pd.to_numeric, errors="coerce")
+    if not np.isfinite(X.to_numpy(dtype=float)).all():
+        raise ValueError("Invalid latest prediction features.")
+    latest["Score"] = model.predict_proba(X)[:, 1] * 100
+    latest["Flag"] = model.predict(X).astype(int)
+    latest["Status"] = latest["Flag"].map({1: "Stress alert", 0: "No stress alert"})
+    latest["Industry"] = latest["industry"].str.title()
+    latest = latest.sort_values("Score", ascending=False)
+    industries = sorted(history["industry"].str.title().unique())
+    colors = dict(zip(industries, INDUSTRY_PALETTE))
+    historical = historical_features(history)
+    clusters = notebook_clusters(historical)
+    assert clusters["Cluster ID"].value_counts().sort_index().to_dict() == {0: 42, 1: 268, 2: 386}, "K-Means output differs from original notebook."
+except Exception as e:
+    st.error(f"Unable to initialise dashboard: {e}")
     st.stop()
 
-st.title('Singapore Sectoral Labour Market Stress Monitor')
-st.caption(f'Latest source quarter: {current_q}  •  Next-quarter screening: {current_q+1}  •  Static MOM data snapshot')
-st.info('Model stress scores are **uncalibrated classification scores**, not probabilities of actual economic distress. Alerts are exploratory screening signals.')
-tab1,tab2,tab3=st.tabs(['① Stress Overview & Predictions','② Labour Market Indicators','③ K-Means Clustering'])
+# ── One sidebar filter for all tabs ──────────────────────────────────────────
+with st.sidebar:
+    st.header("Dashboard filters")
+    st.caption("Shared across all three tabs")
+    for ind in industries:
+        if f"industry_{ind}" not in st.session_state:
+            st.session_state[f"industry_{ind}"] = True
+    a, b = st.columns(2)
+    def set_all(value):
+        for name in industries:
+            st.session_state[f"industry_{name}"] = value
+    a.button("Select all", use_container_width=True, on_click=set_all, args=(True,))
+    b.button("Clear all", use_container_width=True, on_click=set_all, args=(False,))
+    chosen = [ind for ind in industries if st.checkbox(ind, key=f"industry_{ind}")]
+    st.caption(f"**{len(chosen)} of {len(industries)} selected**")
+    st.divider()
+    qs = sorted(history["quarter"].unique())
+    start = st.selectbox("From quarter", qs, index=0, format_func=str)
+    end = st.selectbox("To quarter", qs, index=len(qs)-1, format_func=str)
+    if start > end:
+        st.error("From quarter must be before or equal to To quarter.")
+    st.caption("Quarter filters apply to historical charts only. Predictions always use the latest available quarter.")
+
+selected = chosen
+valid_period = start <= end
+def subset(data, time=True):
+    mask = data["Industry"].isin(selected)
+    if time:
+        mask &= data["quarter"].between(start, end) if valid_period else False
+    return data.loc[mask].copy()
+
+st.title("Singapore Sectoral Labour Market Stress Monitor")
+st.caption(f"Latest source quarter: {current_q}  ·  Next-quarter screening: {current_q+1}  ·  Static MOM data snapshot")
+info("Model scores are uncalibrated classification scores, not probabilities of actual economic distress. Alerts are exploratory screening signals.")
+
+tab1, tab2, tab3 = st.tabs(["① Stress Overview & Predictions", "② Labour Market Indicators", "③ K-Means Clustering"])
 
 with tab1:
-    st.subheader(f'{current_q+1} Predicted Labour Market Stress by Industry')
-    a,b,c=st.columns(3)
-    a.metric('Industries monitored',len(latest))
-    b.metric('Flagged for next-quarter stress',int(latest['Flag'].sum()))
-    c.metric('Not flagged',int((latest['Flag']==0).sum()))
-    selected=industry_filter('Industries to display (A–Z)',industries,'overview_industries')
-    view=latest.loc[latest['Industry'].isin(selected)].sort_values('Score',ascending=False)
+    st.subheader(f"Next-quarter stress screening · {current_q+1}")
+    view = subset(latest, time=False).sort_values("Score", ascending=False)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Selected industries", len(view))
+    m2.metric("Stress alerts", int(view["Flag"].sum()))
+    m3.metric("No stress alert", int((view["Flag"] == 0).sum()))
     if not view.empty:
-        order=view['Industry'].tolist()
-        bars=alt.Chart(view).mark_bar(cornerRadiusEnd=3).encode(
-            y=alt.Y('Industry:N',sort=order,title=None,axis=alt.Axis(labelLimit=370)),
-            x=alt.X('Score:Q',scale=alt.Scale(domain=[0,105]),title='Model stress score (%)'),
-            color=alt.Color('Status:N',scale=alt.Scale(domain=['Stress alert','No stress alert'],range=['#DC2626','#0D9488']),legend=alt.Legend(orient='bottom')),
-            tooltip=['Industry:N','Status:N',alt.Tooltip('Score:Q',format='.1f',title='Model stress score (%)')]
-        )
-        labels=alt.Chart(view).mark_text(align='left',dx=5,fontSize=12).encode(y=alt.Y('Industry:N',sort=order),x='Score:Q',text=alt.Text('Score:Q',format='.1f'))
-        st.altair_chart((bars+labels).properties(height=max(300,len(view)*37)),use_container_width=True)
-        st.caption('Bars are sorted from highest to lowest model stress score; labels show scores on a 0–100 scale (not calibrated risk probabilities).')
-        st.dataframe(view[['Industry','Score','Status']].rename(columns={'Score':'Model stress score (%)'}).style.format({'Model stress score (%)':'{:.1f}'}),hide_index=True,use_container_width=True)
-        st.download_button('Download latest prediction table',view[['Industry','Score','Status']].to_csv(index=False),file_name=f'predictions_{current_q+1}.csv',mime='text/csv')
-    else: st.info('Select at least one industry.')
+        fig = go.Figure()
+        for status in ["Stress alert", "No stress alert"]:
+            sub = view.loc[view["Status"] == status]
+            fig.add_trace(go.Bar(
+                x=sub["Score"], y=sub["Industry"], orientation="h",
+                name=status, marker_color=ALERT if status == "Stress alert" else NO_ALERT,
+                text=[f"{x:.1f}" for x in sub["Score"]], textposition="inside",
+                insidetextanchor="end", textfont=dict(color="#FFFFFF", size=12),
+                hovertemplate="%{y}<br>Model score: %{x:.1f}<br>" + status + "<extra></extra>",
+            ))
+        fig.update_layout(barmode="overlay", yaxis=dict(categoryorder="array", categoryarray=list(reversed(view["Industry"].tolist()))))
+        fig.update_xaxes(range=[0, 100], title="Model stress score (0–100; uncalibrated)")
+        plot_style(fig, height=max(330, 43 * len(view)))
+        st.plotly_chart(fig, use_container_width=True)
+        st.download_button("Download latest prediction table", view[["Industry", "Score", "Status"]].to_csv(index=False),
+                           file_name=f"predictions_{current_q+1}.csv", mime="text/csv")
+    else:
+        empty_notice()
 
     st.divider()
-    st.subheader('Historical Stress Signals')
-    st.caption('Historical stress is derived from the same analyst-defined rule (at least two adverse rolling 12-quarter Z-scores). It is **not** a historical next-quarter model-score series.')
-    hist_ind=industry_filter('Industries for historical trend (A–Z)',industries,'overview_history_industries',defaults=industries[:3])
-    start,end=quarter_filter(history,'overview_history')
-    # For each industry use the previous 12 quarters to standardise each indicator.
-    zcols={}
-    for col in ['employment_change','job_vacancy_rate','recruitment_rate','retrench']:
-        grp=history.groupby('industry')[col]
-        means=grp.transform(lambda s:s.shift(1).rolling(12,min_periods=12).mean())
-        stds=grp.transform(lambda s:s.shift(1).rolling(12,min_periods=12).std())
-        zcols[col]=(history[col]-means)/stds.replace(0,np.nan)
-    z=pd.DataFrame(zcols)
-    adverse=((z['employment_change']<=-1).astype(int)+(z['job_vacancy_rate']<=-1).astype(int)+(z['recruitment_rate']<=-1).astype(int)+(z['retrench']>=1).astype(int))
-    hist=history[['quarter','industry']].copy()
-    hist['Industry']=hist['industry'].str.title()
-    hist['Adverse indicators']=adverse.where(z.notna().all(axis=1),np.nan)
-    hist['Stress flag']=np.where(hist['Adverse indicators'].notna(),(hist['Adverse indicators']>=2).astype(int),np.nan)
-    if start is not None:
-        filtered=hist.loc[hist['Industry'].isin(hist_ind)&hist['quarter'].between(start,end)].dropna(subset=['Adverse indicators'])
-        line_plot(filtered,'Adverse indicators','count (0–4)','Adverse indicators')
-        st.caption('Stress criterion: 2 or more adverse indicators. Missing early quarters are excluded until a full 12-quarter lookback exists.')
+    st.subheader("Historical adverse-indicator heatmap")
+    info("Each cell shows the number of adverse indicators (0–4). A white outline and ● mark identify observations meeting the analyst-defined stress criterion (2 or more). This is historical rule-based classification, not a series of model predictions.")
+    h = subset(historical).dropna(subset=["Adverse indicators"])
+    if not h.empty:
+        quarters = sorted(h["quarter"].unique())
+        ys = sorted(h["Industry"].unique())
+        matrix = h.pivot(index="Industry", columns="quarter", values="Adverse indicators").reindex(index=ys, columns=quarters)
+        z = matrix.to_numpy(dtype=float)
+        fig = go.Figure(go.Heatmap(
+            z=z, x=[str(q) for q in quarters], y=ys,
+            colorscale=HEATMAP_SCALE, zmin=0, zmax=4, zsmooth=False,
+            colorbar=dict(title="Adverse<br>indicators", tickvals=[0, 1, 2, 3, 4]),
+            hovertemplate="%{y}<br>%{x}<br>Adverse indicators: %{z:.0f}<extra></extra>",
+            xgap=1, ygap=3,
+        ))
+        xx, yy = np.where(np.isfinite(z) & (z >= 2))
+        if len(xx):
+            fig.add_trace(go.Scatter(
+                x=[str(quarters[c]) for c in yy], y=[ys[r] for r in xx],
+                mode="markers", marker=dict(symbol="circle-open", size=10, color="#FFFFFF", line=dict(width=1.5, color="#FFFFFF")),
+                name="Stress criterion met (2+)", hoverinfo="skip",
+            ))
+        years = [i for i, q in enumerate(quarters) if q.quarter == 1]
+        fig.update_xaxes(tickmode="array", tickvals=[str(quarters[i]) for i in years], ticktext=[str(quarters[i].year) for i in years], title="Year")
+        fig.update_yaxes(autorange="reversed")
+        plot_style(fig, height=max(380, 34 * len(ys) + 120))
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        empty_notice()
 
 with tab2:
-    st.subheader('Historical Labour Market Indicators')
-    st.caption('Choose any combination of industries and a timeframe. The same filters apply to all five charts.')
-    selected=industry_filter('Industries (A–Z)',industries,'indicators_industries',defaults=industries[:3])
-    start,end=quarter_filter(history,'indicators')
-    if start is not None:
-        frame=history.loc[history['industry'].str.title().isin(selected)&history['quarter'].between(start,end)].copy()
-        frame['Industry']=frame['industry'].str.title()
-        for field,(label,unit) in INDICATORS.items():
-            st.markdown(f'#### {label}')
-            line_plot(frame,field,unit,label)
-        if not frame.empty:
-            downloadable=frame[['quarter','Industry',*INDICATORS]].copy()
-            downloadable['quarter']=downloadable['quarter'].astype(str)
-            st.download_button('Download filtered indicator data',downloadable.to_csv(index=False),file_name='filtered_labour_indicators.csv',mime='text/csv')
+    st.subheader("Historical labour market indicators")
+    info("The figures above each chart show the latest available quarter within your selected timeframe, compared with the same quarter one year earlier. Values are shown separately by industry; no cross-industry averaging is performed.")
+    frame = subset(historical)
+    for row_start in range(0, len(INDICATORS), 2):
+        columns = st.columns(2)
+        for j, (field, (label, unit)) in enumerate(list(INDICATORS.items())[row_start:row_start+2]):
+            with columns[j]:
+                st.markdown(f"#### {label}")
+                if frame.empty:
+                    empty_notice()
+                    continue
+                latest_visible = frame["quarter"].max()
+                prev_q = latest_visible - 4
+                latest_rows = frame.loc[frame["quarter"] == latest_visible].sort_values("Industry")
+                # Year-on-year comparison reads the full source, even if the prior year is outside the display window.
+                previous = history.loc[history["quarter"] == prev_q].set_index(history.loc[history["quarter"] == prev_q, "industry"].str.title())[field]
+                metrics = []
+                for _, r in latest_rows.iterrows():
+                    now = r[field]
+                    old = previous.get(r["Industry"], np.nan)
+                    diff = now - old if pd.notna(now) and pd.notna(old) else np.nan
+                    delta = f"{diff:+,.2f} {unit} YoY" if pd.notna(diff) else "YoY unavailable"
+                    metrics.append(f"**{r['Industry']}**: {now:,.2f} {unit} · {delta}")
+                with st.expander(f"{latest_visible} values and year-on-year changes ({len(metrics)} industries)", expanded=True):
+                    st.markdown("\n\n".join(metrics))
+                fig = go.Figure()
+                for ind in sorted(frame["Industry"].unique()):
+                    part = frame.loc[frame["Industry"] == ind].sort_values("quarter")
+                    fig.add_trace(go.Scatter(
+                        x=part["quarter"].dt.to_timestamp(), y=part[field], mode="lines",
+                        name=ind, line=dict(color=colors[ind], width=2),
+                        customdata=part["quarter"].astype(str),
+                        hovertemplate=f"{ind}<br>%{{x|%Y Q%q}}<br>{label}: %{{y:,.2f}} {unit}<extra></extra>",
+                    ))
+                fig.update_xaxes(dtick="M12", tickformat="%Y", title="Year")
+                fig.update_yaxes(title=f"{label} ({unit})")
+                plot_style(fig, height=380, legend=dict(orientation="h", y=-0.22, x=0, font=dict(size=10)))
+                st.plotly_chart(fig, use_container_width=True, key=f"indicator_{field}")
+    if not frame.empty:
+        download = frame[["quarter", "Industry", *INDICATORS]].copy()
+        download["quarter"] = download["quarter"].astype(str)
+        st.download_button("Download filtered indicator data", download.to_csv(index=False),
+                           file_name="filtered_labour_indicators.csv", mime="text/csv")
 
 with tab3:
-    st.subheader('K-Means Clustering of Industry-Quarter Observations')
-    st.warning('The uploaded package did not contain the original K-Means labels, PCA coordinates, or clustering preprocessing. The visualisation below is a **new exploratory reconstruction**, not a reproduction of the three original named labour market states. Do not cite its counts as the original capstone results.')
-    clusters=build_clusters(history)
-    left,right=st.columns([1.6,1])
-    with left:
-        st.markdown('#### PCA scatter plot')
-        scatter=alt.Chart(clusters).mark_circle(size=48,opacity=.7).encode(
-            x=alt.X('PC1:Q',title='Principal Component 1'),y=alt.Y('PC2:Q',title='Principal Component 2'),
-            color=alt.Color('Cluster:N',scale=alt.Scale(domain=['Cluster 1','Cluster 2','Cluster 3'],range=PALETTE)),
-            tooltip=['Industry:N','Quarter:N','Cluster:N',alt.Tooltip('PC1:Q',format='.2f'),alt.Tooltip('PC2:Q',format='.2f')]
-        ).properties(height=400)
-        st.altair_chart(scatter,use_container_width=True)
-    with right:
-        st.markdown('#### Cluster distribution')
-        counts=clusters.groupby('Cluster').size().rename('Count').reset_index()
-        counts['Percentage']=counts['Count']/counts['Count'].sum()*100
-        counts['Label']=counts.apply(lambda r:f"{int(r['Count'])} ({r['Percentage']:.1f}%)",axis=1)
-        pie=alt.Chart(counts).mark_arc(innerRadius=48).encode(theta='Count:Q',color=alt.Color('Cluster:N',scale=alt.Scale(domain=['Cluster 1','Cluster 2','Cluster 3'],range=PALETTE)),tooltip=['Cluster:N','Count:Q',alt.Tooltip('Percentage:Q',format='.1f')]).properties(height=300)
-        st.altair_chart(pie,use_container_width=True)
-        st.dataframe(counts[['Cluster','Count','Percentage']].style.format({'Percentage':'{:.1f}%'}),hide_index=True,use_container_width=True)
-    st.caption('Reconstruction method: complete cases of five raw indicators, StandardScaler, K-Means (k=3; random_state=42; n_init=20), and 2-component PCA for display. PCA coordinates are for visualisation; K-Means was fitted on five standardised indicators.')
-    st.divider()
-    st.markdown('#### Explore exact industry-quarter members')
-    chosen=st.multiselect('Clusters (A–Z)',sorted(clusters['Cluster'].unique()),default=sorted(clusters['Cluster'].unique()),key='cluster_select')
-    subset=clusters.loc[clusters['Cluster'].isin(chosen)].sort_values(['Cluster','Industry','quarter'])
-    st.caption(f'{len(subset):,} industry-quarter observations selected')
-    columns=['Cluster','Industry','Quarter','PC1','PC2',*INDICATORS]
-    st.dataframe(subset[columns],hide_index=True,use_container_width=True)
-    st.download_button('Download selected cluster members',subset[columns].to_csv(index=False),file_name='cluster_members_reconstructed.csv',mime='text/csv')
+    st.subheader("Historical labour market states · PCA and K-Means")
+    info("Descriptive historical analysis only. Cluster states show recurring patterns in industry-relative indicators; they do not predict next-quarter stress. Reproduced using the original capstone notebook's PCA and K-Means settings.")
+    # Reference profiles are deliberately based on the full fitted historical clustering sample.
+    profiles = clusters.groupby("Cluster")[ZCOLS].mean().reindex(CLUSTER_ORDER)
+    names = {
+        "employment_change_zscore": "Employment change (Z-score)",
+        "job_vacancy_rate_zscore": "Job vacancy rate (Z-score)",
+        "recruitment_rate_zscore": "Recruitment rate (Z-score)",
+        "resignation_rate_zscore": "Resignation rate (Z-score)",
+        "retrench_zscore": "Retrenchments (Z-score)",
+    }
+    st.markdown("#### Cluster definitions and average historical indicators")
+    st.dataframe(profiles.rename(columns=names).round(2), use_container_width=True)
+    st.caption("Averages are industry-relative historical Z-scores (not raw percentages or counts). Names follow the original notebook: Strong / Active, Cooling / Soft, and Severe Disruption.")
+    st.markdown("#### Explore industry-quarter classifications")
+    cluster_view = subset(clusters)
+    if cluster_view.empty:
+        empty_notice()
+    else:
+        left, right = st.columns([1.55, 1])
+        with left:
+            fig = go.Figure()
+            for name in CLUSTER_ORDER:
+                part = cluster_view.loc[cluster_view["Cluster"] == name]
+                fig.add_trace(go.Scatter(
+                    x=part["PC1"], y=part["PC2"], mode="markers", name=name,
+                    marker=dict(color=CLUSTER_COLORS[name], size=7, opacity=0.72),
+                    customdata=np.column_stack([part["Industry"], part["quarter"].astype(str)]),
+                    hovertemplate="Industry: %{customdata[0]}<br>Quarter: %{customdata[1]}<br>State: " + name +
+                                  "<br>PC1: %{x:.2f}<br>PC2: %{y:.2f}<extra></extra>",
+                ))
+            fig.update_xaxes(title="Principal component 1")
+            fig.update_yaxes(title="Principal component 2")
+            plot_style(fig, height=440)
+            st.plotly_chart(fig, use_container_width=True)
+        with right:
+            counts = cluster_view.groupby("Cluster").size().reindex(CLUSTER_ORDER, fill_value=0)
+            total = counts.sum()
+            fig = go.Figure(go.Bar(
+                x=counts.values, y=counts.index, orientation="h",
+                marker_color=[CLUSTER_COLORS[n] for n in counts.index],
+                text=[f"{v} ({v/total:.1%})" for v in counts.values],
+                textposition="inside", textfont=dict(color="#FFFFFF", size=12),
+                hovertemplate="%{y}: %{x} observations<extra></extra>",
+            ))
+            fig.update_yaxes(autorange="reversed")
+            fig.update_xaxes(title="Industry-quarter observations")
+            plot_style(fig, height=320, showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(f"{total:,} observations in the selected industries and quarters.")
+        st.markdown("#### Industry-quarter observations")
+        display_cols = ["Industry", "quarter", "Cluster", "PC1", "PC2", *INDICATORS]
+        readable = {
+            "quarter": "Quarter", "Cluster": "Labour market state",
+            "PC1": "Principal component 1", "PC2": "Principal component 2",
+            "employment_change": "Employment change (thousands)",
+            "job_vacancy_rate": "Job vacancy rate (%)",
+            "recruitment_rate": "Recruitment rate (%)",
+            "resignation_rate": "Resignation rate (%)",
+            "retrench": "Retrenchments (persons)",
+        }
+        table = cluster_view.sort_values(["Industry", "quarter"])[display_cols].rename(columns=readable)
+        table["Quarter"] = table["Quarter"].astype(str)
+        st.dataframe(table, use_container_width=True, hide_index=True)
+        st.download_button("Download selected cluster members", table.to_csv(index=False),
+                           file_name="historical_cluster_members.csv", mime="text/csv")
 
 st.divider()
-st.caption('Source: MOM quarterly labour market data supplied with the project. Dashboard is a static snapshot; new releases are not retrieved automatically.')
+st.caption("Source: MOM quarterly labour market statistics supplied with the capstone. Static snapshot; new MOM releases are not retrieved automatically.")
