@@ -181,6 +181,7 @@ def subset(data, time=True):
     return data.loc[mask].copy()
 
 st.title("Singapore Sectoral Labour Market Stress Monitor")
+st.caption("Dashboard UI build: v7 — 23 October 2026")
 st.caption(f"Latest source quarter: {current_q}  ·  Next-quarter screening: {current_q+1}  ·  Static MOM data snapshot")
 
 tab1, tab2, tab3 = st.tabs(["① Stress Overview & Predictions", "② Labour Market Indicators", "③ K-Means Clustering"])
