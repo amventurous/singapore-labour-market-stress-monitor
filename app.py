@@ -9,7 +9,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 
-st.set_page_config(page_title="Singapore Sectoral Labour Market Stress Monitor", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Singapore Sectoral Labour Market Stress Monitor", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 ROOT = Path(__file__).resolve().parent
 
 # ── Shared visual system: change colours here only ───────────────────────────
@@ -178,7 +178,6 @@ def subset(data, time=True):
 
 st.title("Singapore Sectoral Labour Market Stress Monitor")
 st.caption(f"Latest source quarter: {current_q}  ·  Next-quarter screening: {current_q+1}  ·  Static MOM data snapshot")
-info("Model scores are uncalibrated classification scores, not probabilities of actual economic distress. Alerts are exploratory screening signals.")
 
 tab1, tab2, tab3 = st.tabs(["① Stress Overview & Predictions", "② Labour Market Indicators", "③ K-Means Clustering"])
 
@@ -264,8 +263,10 @@ with tab2:
                     diff = now - old if pd.notna(now) and pd.notna(old) else np.nan
                     delta = f"{diff:+,.2f} {unit} YoY" if pd.notna(diff) else "YoY unavailable"
                     metrics.append(f"**{r['Industry']}**: {now:,.2f} {unit} · {delta}")
-                with st.expander(f"{latest_visible} values and year-on-year changes ({len(metrics)} industries)", expanded=True):
-                    st.markdown("\n\n".join(metrics))
+                if len(metrics) == 1:
+                    st.caption(metrics[0].replace("**", ""))
+                elif metrics:
+                    st.caption(f"{latest_visible}: latest values and year-on-year changes for {len(metrics)} industries")
                 fig = go.Figure()
                 for ind in sorted(frame["Industry"].unique()):
                     part = frame.loc[frame["Industry"] == ind].sort_values("quarter")
@@ -273,7 +274,7 @@ with tab2:
                         x=part["quarter"].dt.to_timestamp(), y=part[field], mode="lines",
                         name=ind, line=dict(color=colors[ind], width=2),
                         customdata=part["quarter"].astype(str),
-                        hovertemplate=f"{ind}<br>%{{x|%Y Q%q}}<br>{label}: %{{y:,.2f}} {unit}<extra></extra>",
+                        hovertemplate=f"{ind}<br>%{{customdata}}<br>{label}: %{{y:,.2f}} {unit}<extra></extra>",
                     ))
                 fig.update_xaxes(dtick="M12", tickformat="%Y", title="Year")
                 fig.update_yaxes(title=f"{label} ({unit})")
