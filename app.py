@@ -248,49 +248,48 @@ with tab2:
     st.subheader("Historical labour market indicators")
     info("The figures above each chart show the latest available quarter within your selected timeframe, compared with the same quarter one year earlier. Values are shown separately by industry; no cross-industry averaging is performed.")
     frame = subset(historical)
-    for row_start in range(0, len(INDICATORS), 2):
-        columns = st.columns(2)
-        for j, (field, (label, unit)) in enumerate(list(INDICATORS.items())[row_start:row_start+2]):
-            with columns[j]:
-                st.markdown(f"#### {label}")
-                if frame.empty:
-                    empty_notice()
-                    continue
-                latest_visible = frame["quarter"].max()
-                prev_q = latest_visible - 4
-                latest_rows = frame.loc[frame["quarter"] == latest_visible].sort_values("Industry")
-                # Year-on-year comparison reads the full source, even if the prior year is outside the display window.
-                previous = history.loc[history["quarter"] == prev_q].set_index(history.loc[history["quarter"] == prev_q, "industry"].str.title())[field]
-                metrics = []
-                for _, r in latest_rows.iterrows():
-                    now = r[field]
-                    old = previous.get(r["Industry"], np.nan)
-                    diff = now - old if pd.notna(now) and pd.notna(old) else np.nan
-                    delta = f"{diff:+,.2f} {unit} YoY" if pd.notna(diff) else "YoY unavailable"
-                    metrics.append(f"**{r['Industry']}**: {now:,.2f} {unit} · {delta}")
-                if len(metrics) == 1:
-                    st.caption(metrics[0].replace("**", ""))
-                elif metrics:
-                    st.caption(f"{latest_visible}: latest values and year-on-year changes for {len(metrics)} industries")
-                fig = go.Figure()
-                for ind in sorted(frame["Industry"].unique()):
-                    part = frame.loc[frame["Industry"] == ind].sort_values("quarter")
-                    fig.add_trace(go.Scatter(
-                        x=part["quarter"].dt.to_timestamp(), y=part[field], mode="lines",
-                        name=ind, line=dict(color=colors[ind], width=2),
-                        customdata=part["quarter"].astype(str),
-                        hovertemplate=f"{ind}<br>%{{customdata}}<br>{label}: %{{y:,.2f}} {unit}<extra></extra>",
-                    ))
-                fig.update_xaxes(dtick="M12", tickformat="%Y", title="Year")
-                fig.update_yaxes(title=f"{label} ({unit})")
-                plot_style(fig, height=620, legend=dict(
-                    orientation="v", x=1.02, y=1, xanchor="left",
-                    font=dict(size=11, color=TEXT)
-                ))
-                st.plotly_chart(
-                    fig, use_container_width=True, key=f"indicator_{field}",
-                    config={"displayModeBar": False, "displaylogo": False}
-                )
+    # One full-width chart per row. The sidebar is the only industry selector.
+    for field, (label, unit) in INDICATORS.items():
+        st.markdown(f"#### {label}")
+        if frame.empty:
+            empty_notice()
+            continue
+        latest_visible = frame["quarter"].max()
+        prev_q = latest_visible - 4
+        latest_rows = frame.loc[frame["quarter"] == latest_visible].sort_values("Industry")
+        previous_rows = history.loc[history["quarter"] == prev_q]
+        previous = previous_rows.set_index(previous_rows["industry"].str.title())[field]
+        metrics = []
+        for _, r in latest_rows.iterrows():
+            now = r[field]
+            old = previous.get(r["Industry"], np.nan)
+            diff = now - old if pd.notna(now) and pd.notna(old) else np.nan
+            delta = f"{diff:+,.2f} {unit} YoY" if pd.notna(diff) else "YoY unavailable"
+            metrics.append(f"**{r['Industry']}**: {now:,.2f} {unit} · {delta}")
+        if len(metrics) == 1:
+            st.caption(metrics[0].replace("**", ""))
+        elif metrics:
+            st.caption(f"{latest_visible}: latest values and year-on-year changes for {len(metrics)} industries")
+        fig = go.Figure()
+        for ind in sorted(frame["Industry"].unique()):
+            part = frame.loc[frame["Industry"] == ind].sort_values("quarter")
+            fig.add_trace(go.Scatter(
+                x=part["quarter"].dt.to_timestamp(), y=part[field], mode="lines",
+                name=ind, line=dict(color=colors[ind], width=2),
+                customdata=part["quarter"].astype(str),
+                hovertemplate=f"{ind}<br>%{{customdata}}<br>{label}: %{{y:,.2f}} {unit}<extra></extra>",
+            ))
+        fig.update_xaxes(dtick="M12", tickformat="%Y", title="Year")
+        fig.update_yaxes(title=f"{label} ({unit})")
+        plot_style(fig, height=700, legend=dict(
+            orientation="h", x=0, y=-0.17, xanchor="left", yanchor="top",
+            font=dict(size=12, color=TEXT), tracegroupgap=5,
+        ), margin=dict(l=75, r=25, t=25, b=190))
+        st.plotly_chart(
+            fig, use_container_width=True, key=f"indicator_{field}",
+            config={"displayModeBar": False, "displaylogo": False}
+        )
+        st.divider()
     if not frame.empty:
         download = frame[["quarter", "Industry", *INDICATORS]].copy()
         download["quarter"] = download["quarter"].astype(str)
