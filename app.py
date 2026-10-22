@@ -166,10 +166,16 @@ with st.sidebar:
     st.caption(f"**{len(chosen)} of {len(industries)} selected**")
     st.divider()
     qs = sorted(history["quarter"].unique())
-    start = st.selectbox("From quarter", qs, index=0, format_func=str)
-    end = st.selectbox("To quarter", qs, index=len(qs)-1, format_func=str)
-    if start > end:
-        st.error("From quarter must be before or equal to To quarter.")
+    quarter_labels = [str(q) for q in qs]
+    first_label, last_label = st.select_slider(
+        "Historical quarter range",
+        options=quarter_labels,
+        value=(quarter_labels[0], quarter_labels[-1]),
+        key="historical_quarter_range",
+    )
+    start = pd.Period(first_label, freq="Q")
+    end = pd.Period(last_label, freq="Q")
+    st.caption(f"**From:** {first_label}  ·  **To:** {last_label}")
     st.caption("Quarter filters apply to historical charts only. Predictions always use the latest available quarter.")
 
 selected = chosen
@@ -181,7 +187,7 @@ def subset(data, time=True):
     return data.loc[mask].copy()
 
 st.title("Singapore Sectoral Labour Market Stress Monitor")
-st.caption("Dashboard UI build: v7 — 23 October 2026")
+st.caption("Dashboard UI build: v9 — 23 October 2026")
 st.caption(f"Latest source quarter: {current_q}  ·  Next-quarter screening: {current_q+1}  ·  Static MOM data snapshot")
 
 tab1, tab2, tab3 = st.tabs(["① Stress Overview & Predictions", "② Labour Market Indicators", "③ K-Means Clustering"])
