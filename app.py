@@ -105,16 +105,20 @@ def notebook_clusters(features):
     return data
 
 def plot_style(fig, height=380, **kwargs):
-    fig.update_layout(
-        template="plotly_dark", paper_bgcolor=BG, plot_bgcolor=BG,
-        font=dict(color=TEXT, size=12), title_font=dict(color=TEXT),
-        hoverlabel=dict(bgcolor=SURFACE, font_color=TEXT),
-        height=height, **({"margin": dict(l=12, r=18, t=30, b=35)} | kwargs)
-    )
-    if "legend" not in kwargs:
-        fig.update_layout(legend=dict(font=dict(color=TEXT), title_font=dict(color=MUTED)))
-    fig.update_xaxes(gridcolor=GRID, zerolinecolor=GRID, tickfont=dict(color=MUTED), title_font=dict(color=MUTED))
-    fig.update_yaxes(gridcolor=GRID, zerolinecolor=GRID, tickfont=dict(color=MUTED), title_font=dict(color=MUTED))
+    """Apply common chart styling without forwarding duplicate Plotly arguments."""
+    fig.update_layout(template="plotly_dark")
+    fig.update_layout(paper_bgcolor=BG, plot_bgcolor=BG)
+    fig.update_layout(font=dict(color=TEXT, size=12))
+    fig.update_layout(hoverlabel=dict(bgcolor=SURFACE, font_color=TEXT))
+    fig.update_layout(height=height)
+    fig.update_layout(margin=dict(l=12, r=18, t=30, b=35))
+    fig.update_layout(legend=dict(font=dict(color=TEXT)))
+    for name, value in kwargs.items():
+        fig.update_layout(**{name: value})
+    fig.update_xaxes(gridcolor=GRID, zerolinecolor=GRID,
+                     tickfont=dict(color=MUTED), title_font=dict(color=MUTED))
+    fig.update_yaxes(gridcolor=GRID, zerolinecolor=GRID,
+                     tickfont=dict(color=MUTED), title_font=dict(color=MUTED))
     return fig
 
 def empty_notice():
@@ -281,7 +285,7 @@ with tab2:
                 plot_style(fig, height=620, legend=dict(
                     orientation="v", x=1.02, y=1, xanchor="left",
                     font=dict(size=11, color=TEXT)
-                ), margin=dict(l=12, r=18, t=30, b=35))
+                ))
                 st.plotly_chart(
                     fig, use_container_width=True, key=f"indicator_{field}",
                     config={"displayModeBar": False, "displaylogo": False}
