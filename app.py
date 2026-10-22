@@ -165,280 +165,36 @@ with tab2:
             downloadable['quarter']=downloadable['quarter'].astype(str)
             st.download_button('Download filtered indicator data',downloadable.to_csv(index=False),file_name='filtered_labour_indicators.csv',mime='text/csv')
 
-
 with tab3:
-    st.subheader("K-Means Clustering Analysis")
-
-    st.write(
-        "K-Means clustering groups industry-quarter observations "
-        "based on similarities across five labour market indicators. "
-        "PCA is used to visualise the clusters in two dimensions."
-    )
-
-    st.warning(
-        "The original fitted K-Means model and cluster assignments "
-        "were not included in the uploaded package. These results "
-        "are reconstructed and may differ from the original capstone."
-    )
-
-    clusters = build_clusters(history)
-
-    # ----------------------------------------
-    # 1. Cluster definitions
-    # ----------------------------------------
-
-    st.markdown("### Understanding the Clusters")
-
-    st.markdown("""
-    The original capstone identified three broad labour market states:
-
-    | Labour Market State | Definition |
-    |---|---|
-    | **Strong / Active** | Stronger employment growth, job vacancies and recruitment activity, indicating relatively healthy labour demand. |
-    | **Cooling / Soft** | Weaker employment and hiring activity, suggesting moderating labour demand without severe disruption. |
-    | **Severe Disruption** | Pronounced adverse labour market movements, potentially including employment contraction and elevated retrenchments. |
-
-    These are descriptive interpretations of the original clustering
-    analysis, not official MOM classifications.
-
-    **Important:** The reconstructed clusters below retain neutral
-    labels (Cluster 1, 2 and 3) until their profiles can be verified
-    against the original analysis.
-    """)
-
-    # ----------------------------------------
-    # 2. Cluster indicator profiles
-    # ----------------------------------------
-
-    st.markdown("### Cluster Indicator Profiles")
-
-    indicator_cols = list(INDICATORS.keys())
-
-    profiles = (
-        clusters.groupby("Cluster")[indicator_cols]
-        .mean()
-        .round(2)
-    )
-
-    profiles = profiles.rename(
-        columns={
-            col: INDICATORS[col][0]
-            for col in indicator_cols
-        }
-    )
-
-    profiles.insert(
-        0,
-        "Observations",
-        clusters.groupby("Cluster").size()
-    )
-
-    st.dataframe(
-        profiles.reset_index(),
-        hide_index=True,
-        use_container_width=True
-    )
-
-    st.caption(
-        "The table shows average raw indicator values for each "
-        "cluster. Compare the profiles to understand the "
-        "characteristics of each group. Cluster numbers do not "
-        "represent a ranking of labour market stress."
-    )
-
-    st.divider()
-
-    # ----------------------------------------
-    # 3. PCA scatter and cluster distribution
-    # ----------------------------------------
-
-    st.markdown("### Cluster Visualisation")
-
-    left, right = st.columns([1.6, 1])
-
-    cluster_names = [
-        "Cluster 1",
-        "Cluster 2",
-        "Cluster 3"
-    ]
-
+    st.subheader('K-Means Clustering of Industry-Quarter Observations')
+    st.warning('The uploaded package did not contain the original K-Means labels, PCA coordinates, or clustering preprocessing. The visualisation below is a **new exploratory reconstruction**, not a reproduction of the three original named labour market states. Do not cite its counts as the original capstone results.')
+    clusters=build_clusters(history)
+    left,right=st.columns([1.6,1])
     with left:
-        st.markdown("#### PCA Scatter Plot")
-
-        scatter = (
-            alt.Chart(clusters)
-            .mark_circle(size=55, opacity=0.7)
-            .encode(
-                x=alt.X(
-                    "PC1:Q",
-                    title="Principal Component 1"
-                ),
-                y=alt.Y(
-                    "PC2:Q",
-                    title="Principal Component 2"
-                ),
-                color=alt.Color(
-                    "Cluster:N",
-                    scale=alt.Scale(
-                        domain=cluster_names,
-                        range=PALETTE
-                    )
-                ),
-                tooltip=[
-                    "Industry:N",
-                    "Quarter:N",
-                    "Cluster:N",
-                    alt.Tooltip(
-                        "PC1:Q",
-                        format=".2f"
-                    ),
-                    alt.Tooltip(
-                        "PC2:Q",
-                        format=".2f"
-                    )
-                ]
-            )
-            .properties(height=400)
-            .interactive()
-        )
-
-        st.altair_chart(
-            scatter,
-            use_container_width=True
-        )
-
-        st.caption(
-            "Each dot represents one industry-quarter observation. "
-            "Points closer together have more similar PCA "
-            "representations of their labour market indicators."
-        )
-
+        st.markdown('#### PCA scatter plot')
+        scatter=alt.Chart(clusters).mark_circle(size=48,opacity=.7).encode(
+            x=alt.X('PC1:Q',title='Principal Component 1'),y=alt.Y('PC2:Q',title='Principal Component 2'),
+            color=alt.Color('Cluster:N',scale=alt.Scale(domain=['Cluster 1','Cluster 2','Cluster 3'],range=PALETTE)),
+            tooltip=['Industry:N','Quarter:N','Cluster:N',alt.Tooltip('PC1:Q',format='.2f'),alt.Tooltip('PC2:Q',format='.2f')]
+        ).properties(height=400)
+        st.altair_chart(scatter,use_container_width=True)
     with right:
-        st.markdown("#### Cluster Distribution")
-
-        counts = (
-            clusters.groupby("Cluster")
-            .size()
-            .rename("Count")
-            .reset_index()
-        )
-
-        counts["Percentage"] = (
-            counts["Count"] /
-            counts["Count"].sum() * 100
-        )
-
-        counts["Label"] = counts.apply(
-            lambda r: (
-                f"{int(r['Count']):,} "
-                f"({r['Percentage']:.1f}%)"
-            ),
-            axis=1
-        )
-
-        pie = (
-            alt.Chart(counts)
-            .mark_arc(innerRadius=55)
-            .encode(
-                theta=alt.Theta("Count:Q"),
-                color=alt.Color(
-                    "Cluster:N",
-                    scale=alt.Scale(
-                        domain=cluster_names,
-                        range=PALETTE
-                    )
-                ),
-                tooltip=[
-                    "Cluster:N",
-                    "Count:Q",
-                    alt.Tooltip(
-                        "Percentage:Q",
-                        format=".1f",
-                        title="Percentage (%)"
-                    )
-                ]
-            )
-            .properties(height=300)
-        )
-
-        st.altair_chart(
-            pie,
-            use_container_width=True
-        )
-
-        st.dataframe(
-            counts[
-                ["Cluster", "Count", "Percentage"]
-            ].style.format({
-                "Percentage": "{:.1f}%"
-            }),
-            hide_index=True,
-            use_container_width=True
-        )
-
-    st.caption(
-        "Reconstruction: Five raw indicators were standardised "
-        "using StandardScaler. K-Means (k=3) was applied to the "
-        "standardised data, while two-component PCA was used "
-        "for visualisation."
-    )
-
+        st.markdown('#### Cluster distribution')
+        counts=clusters.groupby('Cluster').size().rename('Count').reset_index()
+        counts['Percentage']=counts['Count']/counts['Count'].sum()*100
+        counts['Label']=counts.apply(lambda r:f"{int(r['Count'])} ({r['Percentage']:.1f}%)",axis=1)
+        pie=alt.Chart(counts).mark_arc(innerRadius=48).encode(theta='Count:Q',color=alt.Color('Cluster:N',scale=alt.Scale(domain=['Cluster 1','Cluster 2','Cluster 3'],range=PALETTE)),tooltip=['Cluster:N','Count:Q',alt.Tooltip('Percentage:Q',format='.1f')]).properties(height=300)
+        st.altair_chart(pie,use_container_width=True)
+        st.dataframe(counts[['Cluster','Count','Percentage']].style.format({'Percentage':'{:.1f}%'}),hide_index=True,use_container_width=True)
+    st.caption('Reconstruction method: complete cases of five raw indicators, StandardScaler, K-Means (k=3; random_state=42; n_init=20), and 2-component PCA for display. PCA coordinates are for visualisation; K-Means was fitted on five standardised indicators.')
     st.divider()
+    st.markdown('#### Explore exact industry-quarter members')
+    chosen=st.multiselect('Clusters (A–Z)',sorted(clusters['Cluster'].unique()),default=sorted(clusters['Cluster'].unique()),key='cluster_select')
+    subset=clusters.loc[clusters['Cluster'].isin(chosen)].sort_values(['Cluster','Industry','quarter'])
+    st.caption(f'{len(subset):,} industry-quarter observations selected')
+    columns=['Cluster','Industry','Quarter','PC1','PC2',*INDICATORS]
+    st.dataframe(subset[columns],hide_index=True,use_container_width=True)
+    st.download_button('Download selected cluster members',subset[columns].to_csv(index=False),file_name='cluster_members_reconstructed.csv',mime='text/csv')
 
-    # ----------------------------------------
-    # 4. Explore individual cluster members
-    # ----------------------------------------
-
-    st.markdown("### Explore Cluster Observations")
-
-    selected_clusters = st.multiselect(
-        "Select clusters",
-        options=sorted(clusters["Cluster"].unique()),
-        default=sorted(clusters["Cluster"].unique()),
-        key="tab3_cluster_filter"
-    )
-
-    selected_industries = st.multiselect(
-        "Select industries",
-        options=sorted(clusters["Industry"].unique()),
-        default=sorted(clusters["Industry"].unique()),
-        key="tab3_industry_filter"
-    )
-
-    filtered = clusters[
-        clusters["Cluster"].isin(selected_clusters)
-        & clusters["Industry"].isin(selected_industries)
-    ].copy()
-
-    filtered = filtered.sort_values(
-        ["Cluster", "Industry", "quarter"]
-    )
-
-    st.metric(
-        "Industry-Quarter Observations",
-        f"{len(filtered):,}"
-    )
-
-    display_cols = [
-        "Cluster",
-        "Industry",
-        "Quarter",
-        "PC1",
-        "PC2"
-    ] + indicator_cols
-
-    st.dataframe(
-        filtered[display_cols],
-        hide_index=True,
-        use_container_width=True
-    )
-
-    st.download_button(
-        "Download Filtered Cluster Data",
-        data=filtered[display_cols].to_csv(index=False),
-        file_name="cluster_observations.csv",
-        mime="text/csv"
-    )
-
-
-    st.divider()
+st.divider()
+st.caption('Source: MOM quarterly labour market data supplied with the project. Dashboard is a static snapshot; new releases are not retrieved automatically.')
